@@ -1,3 +1,5 @@
+<svelte:options accessors={true} />
+
 <script lang="ts">
 	import { createEventDispatcher } from "svelte";
 	import type { FileData } from "@gradio/upload";
@@ -8,26 +10,30 @@
 
 	import StatusTracker from "../StatusTracker/StatusTracker.svelte";
 	import type { LoadingStatus } from "../StatusTracker/types";
-	import type { Styles } from "@gradio/utils";
 	import { _ } from "svelte-i18n";
 
-	export let elem_id: string = "";
-	export let elem_classes: Array<string> = [];
-	export let visible: boolean = true;
+	export let elem_id = "";
+	export let elem_classes: string[] = [];
+	export let visible = true;
 	export let value: [FileData, FileData | null] | null = null;
 	let old_value: [FileData, FileData | null] | null = null;
 
 	export let label: string;
-	export let source: string;
+	export let source: "upload" | "webcam";
 	export let root: string;
 	export let root_url: null | string;
 	export let show_label: boolean;
 	export let loading_status: LoadingStatus;
-	export let style: Styles = {};
+	export let height: number | undefined;
+	export let width: number | undefined;
 	export let mirror_webcam: boolean;
 	export let include_audio: boolean;
-
+	export let container = false;
+	export let scale: number | null = null;
+	export let min_width: number | undefined = undefined;
 	export let mode: "static" | "dynamic";
+	export let autoplay = false;
+	export let show_share_button = true;
 
 	let _video: FileData | null = null;
 	let _subtitle: FileData | null = null;
@@ -54,8 +60,6 @@
 		} else {
 			value = null;
 		}
-
-		dispatch("change");
 	}
 
 	$: {
@@ -75,7 +79,11 @@
 	padding={false}
 	{elem_id}
 	{elem_classes}
-	style={{ height: style.height, width: style.width }}
+	{height}
+	{width}
+	{container}
+	{scale}
+	{min_width}
 	allow_overflow={false}
 >
 	<StatusTracker {...loading_status} />
@@ -86,8 +94,13 @@
 			subtitle={_subtitle}
 			{label}
 			{show_label}
+			{autoplay}
+			{show_share_button}
 			on:play
 			on:pause
+			on:stop
+			on:share
+			on:error
 		/>
 	{:else}
 		<Video
@@ -105,10 +118,15 @@
 			{source}
 			{mirror_webcam}
 			{include_audio}
+			{autoplay}
 			on:clear
 			on:play
 			on:pause
 			on:upload
+			on:stop
+			on:end
+			on:start_recording
+			on:stop_recording
 		>
 			<UploadText type="video" />
 		</Video>

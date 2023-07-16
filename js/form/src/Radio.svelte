@@ -1,26 +1,33 @@
 <script lang="ts">
-	import { createEventDispatcher } from "svelte";
+	import { createEventDispatcher, afterUpdate } from "svelte";
 	import { BlockTitle } from "@gradio/atoms";
-	import { get_styles } from "@gradio/utils";
-	import type { Styles, SelectData } from "@gradio/utils";
+	import type { SelectData } from "@gradio/utils";
 
 	export let value: string | null;
-	export let style: Styles = {};
-	export let choices: Array<string>;
-	export let disabled: boolean = false;
+	export let value_is_output = false;
+	export let choices: string[];
+	export let disabled = false;
 	export let label: string;
 	export let info: string | undefined = undefined;
-	export let show_label: boolean = true;
+	export let show_label = true;
 	export let elem_id: string;
 
 	const dispatch = createEventDispatcher<{
 		change: string | null;
+		input: undefined;
 		select: SelectData;
 	}>();
 
-	$: dispatch("change", value);
-
-	$: ({ item_container } = get_styles(style, ["item_container"]));
+	function handle_change(): void {
+		dispatch("change", value);
+		if (!value_is_output) {
+			dispatch("input");
+		}
+	}
+	afterUpdate(() => {
+		value_is_output = false;
+	});
+	$: value, handle_change();
 </script>
 
 <BlockTitle {show_label} {info}>{label}</BlockTitle>
@@ -30,7 +37,7 @@
 		<label
 			class:disabled
 			class:selected={value === choice}
-			style={item_container}
+			data-testid={`${choice}-radio-label`}
 		>
 			<input
 				{disabled}

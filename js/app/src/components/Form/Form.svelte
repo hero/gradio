@@ -1,8 +1,15 @@
 <script lang="ts">
 	export let visible = true;
+	export let scale: number | null = null;
+	export let min_width: number = 0;
 </script>
 
-<div class="form" class:hidden={!visible}>
+<div
+	class="form"
+	class:hidden={!visible}
+	style:flex-grow={scale}
+	style:min-width={`calc(min(${min_width}px, 100%))`}
+>
 	<slot />
 </div>
 
@@ -14,9 +21,9 @@
 		gap: var(--form-gap-width);
 		box-shadow: var(--block-shadow);
 		border: var(--block-border-width) solid var(--border-color-primary);
-		border-radius: var(--radius-lg);
+		border-radius: var(--block-radius);
 		background: var(--border-color-primary);
-		overflow: hidden;
+		overflow-y: hidden;
 	}
 
 	div :global(.block) {

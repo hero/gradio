@@ -1,54 +1,61 @@
 <script lang="ts">
-	import { BlockLabel, Empty } from "@gradio/atoms";
+	import { BlockLabel, Empty, ShareButton } from "@gradio/atoms";
 	import { ModifyUpload } from "@gradio/upload";
 	import type { SelectData } from "@gradio/utils";
+
 	import { createEventDispatcher } from "svelte";
 	import { tick } from "svelte";
 
-	import type { Styles } from "@gradio/utils";
-	import { get_styles } from "@gradio/utils";
 	import { Image } from "@gradio/icons";
 	import type { FileData } from "@gradio/upload";
 	import { normalise_file } from "@gradio/upload";
+	import { format_gallery_for_sharing } from "./utils";
 
-	export let show_label: boolean = true;
+	export let container = true;
+	export let show_label = true;
 	export let label: string;
-	export let root: string = "";
+	export let root = "";
 	export let root_url: null | string = null;
-	export let value: Array<string> | Array<FileData> | null = null;
-	export let style: Styles = {
-		grid_cols: [2],
-		object_fit: "cover",
-		height: "auto"
-	};
+	export let value: (FileData | string | [FileData | string, string])[] | null =
+		null;
+	export let grid_cols: number | number[] | undefined = [2];
+	export let grid_rows: number | number[] | undefined = undefined;
+	export let height: number | "auto" = "auto";
+	export let preview: boolean;
+	export let allow_preview = true;
+	export let object_fit: "contain" | "cover" | "fill" | "none" | "scale-down" =
+		"cover";
+	export let show_share_button: boolean = false;
 
 	const dispatch = createEventDispatcher<{
 		select: SelectData;
 	}>();
 
 	// tracks whether the value of the gallery was reset
-	let was_reset: boolean = true;
+	let was_reset = true;
 
 	$: was_reset = value == null || value.length == 0 ? true : was_reset;
 
+	let _value: [FileData, string | null][] | null = null;
 	$: _value =
 		value === null
 			? null
 			: value.map((img) =>
 					Array.isArray(img)
-						? [normalise_file(img[0], root, root_url), img[1]]
-						: [normalise_file(img, root, root_url), null]
+						? [normalise_file(img[0], root, root_url) as FileData, img[1]]
+						: [normalise_file(img, root, root_url) as FileData, null]
 			  );
 
-	let prevValue: string[] | FileData[] | null = value;
-	let selected_image: number | null = null;
-	let old_selected_image: number | null = null;
+	let prevValue: (FileData | string | [FileData | string, string])[] | null =
+		value;
+	let selected_image = preview && value?.length ? 0 : null;
+	let old_selected_image: number | null = selected_image;
 
 	$: if (prevValue !== value) {
 		// When value is falsy (clear button or first load),
-		// style.preview determines the selected image
+		// preview determines the selected image
 		if (was_reset) {
-			selected_image = style.preview ? 0 : null;
+			selected_image = preview && value?.length ? 0 : null;
 			was_reset = false;
 			// Otherwise we keep the selected_image the same if the
 			// gallery has at least as many elements as it did before
@@ -67,7 +74,7 @@
 		((selected_image ?? 0) + (_value?.length ?? 0) - 1) % (_value?.length ?? 0);
 	$: next = ((selected_image ?? 0) + 1) % (_value?.length ?? 0);
 
-	function on_keydown(e: KeyboardEvent) {
+	function on_keydown(e: KeyboardEvent): void {
 		switch (e.code) {
 			case "Escape":
 				e.preventDefault();
@@ -98,43 +105,68 @@
 		}
 	}
 
-	$: scroll_to_img(selected_image);
+	$: if (allow_preview) {
+		scroll_to_img(selected_image);
+	}
 
-	let el: Array<HTMLButtonElement> = [];
-	let container: HTMLDivElement;
+	let el: HTMLButtonElement[] = [];
+	let container_element: HTMLDivElement;
 
-	async function scroll_to_img(index: number | null) {
+	async function scroll_to_img(index: number | null): Promise<void> {
 		if (typeof index !== "number") return;
 		await tick();
 
 		el[index].focus();
 
 		const { left: container_left, width: container_width } =
-			container.getBoundingClientRect();
+			container_element.getBoundingClientRect();
 		const { left, width } = el[index].getBoundingClientRect();
 
 		const relative_left = left - container_left;
 
 		const pos =
-			relative_left + width / 2 - container_width / 2 + container.scrollLeft;
+			relative_left +
+			width / 2 -
+			container_width / 2 +
+			container_element.scrollLeft;
 
-		container.scrollTo({
+		container_element?.scrollTo({
 			left: pos < 0 ? 0 : pos,
 			behavior: "smooth"
 		});
 	}
 
-	$: can_zoom = window_height >= height;
-
-	function add_height_to_styles(style: Styles): string {
-		styles = get_styles(style, ["grid_cols", "grid_rows", "object_fit"]).styles;
-		return styles + ` height: ${style.height}`;
-	}
-
-	$: styles = add_height_to_styles(style);
-
-	let height = 0;
+	let client_height = 0;
 	let window_height = 0;
+
+	let grid_cols_style = "";
+	let grid_rows_style = "";
+	$: {
+		let grid_cols_map = ["", "sm-", "md-", "lg-", "xl-", "2xl-"];
+		let _grid_cols = Array.isArray(grid_cols) ? grid_cols : [grid_cols];
+
+		grid_cols_style = [0, 0, 0, 0, 0, 0]
+			.map(
+				(_, i) =>
+					`--${grid_cols_map[i]}grid-cols: var(--grid-${
+						_grid_cols?.[i] || _grid_cols?.[_grid_cols?.length - 1]
+					});`
+			)
+			.join(" ");
+	}
+	$: {
+		let grid_rows_map = ["", "sm-", "md-", "lg-", "xl-", "2xl-"];
+		let _grid_rows = Array.isArray(grid_rows) ? grid_rows : [grid_rows];
+
+		grid_rows_style = [0, 0, 0, 0, 0, 0]
+			.map(
+				(_, i) =>
+					`--${grid_rows_map[i]}grid-rows: var(--grid-${
+						_grid_rows?.[i] || _grid_rows?.[_grid_rows?.length - 1]
+					});`
+			)
+			.join(" ");
+	}
 </script>
 
 <svelte:window bind:innerHeight={window_height} />
@@ -144,21 +176,21 @@
 		{show_label}
 		Icon={Image}
 		label={label || "Gallery"}
-		disable={typeof style.container === "boolean" && !style.container}
+		disable={container === false}
 	/>
 {/if}
 {#if value === null || _value === null || _value.length === 0}
-	<Empty size="large" unpadded_box={true}><Image /></Empty>
+	<Empty unpadded_box={true} size="large"><Image /></Empty>
 {:else}
-	{#if selected_image !== null}
-		<div
-			on:keydown={on_keydown}
-			class="preview"
-			class:fixed-height={style.height !== "auto"}
-		>
+	{#if selected_image !== null && allow_preview}
+		<!-- svelte-ignore a11y-no-static-element-interactions -->
+		<div on:keydown={on_keydown} class="preview">
 			<ModifyUpload on:clear={() => (selected_image = null)} />
 
+			<!-- svelte-ignore a11y-click-events-have-key-events -->
+			<!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
 			<img
+				data-testid="detailed-image"
 				on:click={() => (selected_image = next)}
 				src={_value[selected_image][0].data}
 				alt={_value[selected_image][1] || ""}
@@ -173,7 +205,11 @@
 					{_value[selected_image][1]}
 				</div>
 			{/if}
-			<div bind:this={container} class="thumbnails scroll-hide">
+			<div
+				bind:this={container_element}
+				class="thumbnails scroll-hide"
+				data-testid="container_el"
+			>
 				{#each _value as image, i}
 					<button
 						bind:this={el[i]}
@@ -193,16 +229,30 @@
 	{/if}
 
 	<div
-		bind:clientHeight={height}
+		bind:clientHeight={client_height}
 		class="grid-wrap"
-		class:fixed-height={!style.height || style.height == "auto"}
+		class:fixed-height={!height || height == "auto"}
 	>
-		<div class="grid-container" style={styles} class:pt-6={show_label}>
+		<div
+			class="grid-container"
+			style="{grid_cols_style} {grid_rows_style} --object-fit: {object_fit}; height: {height}"
+			class:pt-6={show_label}
+		>
+			{#if show_share_button}
+				<div class="icon-button">
+					<ShareButton
+						on:share
+						on:error
+						value={_value}
+						formatter={format_gallery_for_sharing}
+					/>
+				</div>
+			{/if}
 			{#each _value as [image, caption], i}
 				<button
 					class="thumbnail-item thumbnail-lg"
 					class:selected={selected_image === i}
-					on:click={() => (selected_image = can_zoom ? i : selected_image)}
+					on:click={() => (selected_image = i)}
 				>
 					<img
 						alt={caption || ""}
@@ -280,7 +330,6 @@
 	.thumbnail-item {
 		--ring-color: transparent;
 		position: relative;
-		outline: none;
 		box-shadow: 0 0 0 2px var(--ring-color), var(--shadow-drop);
 		border: 1px solid var(--border-color-primary);
 		border-radius: var(--button-small-radius);
@@ -288,13 +337,16 @@
 		aspect-ratio: var(--ratio-square);
 		width: var(--size-full);
 		height: var(--size-full);
-		overflow: hidden;
+		overflow: clip;
 	}
 
 	.thumbnail-item:hover {
-		--ring-color: var(--border-color-accent);
+		--ring-color: var(--color-accent);
 		filter: brightness(1.1);
-		border-color: var(--border-color-accent);
+	}
+
+	.thumbnail-item.selected {
+		--ring-color: var(--color-accent);
 	}
 
 	.thumbnail-small {
@@ -319,6 +371,7 @@
 	}
 
 	.grid-wrap {
+		position: relative;
 		padding: var(--size-2);
 		height: var(--size-full);
 		overflow-y: auto;
@@ -326,6 +379,7 @@
 
 	.grid-container {
 		display: grid;
+		position: relative;
 		grid-template-rows: var(--grid-rows);
 		grid-template-columns: var(--grid-cols);
 		gap: var(--spacing-lg);
@@ -383,5 +437,12 @@
 		text-align: left;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.icon-button {
+		position: absolute;
+		top: 0px;
+		right: 0px;
+		z-index: var(--layer-1);
 	}
 </style>

@@ -1,11 +1,14 @@
+<svelte:options accessors={true} />
+
 <script lang="ts">
-	import { createEventDispatcher } from "svelte";
+	import { createEventDispatcher, getContext } from "svelte";
 	import { File as FileComponent, FileUpload } from "@gradio/file";
-	import { blobToBase64, FileData } from "@gradio/upload";
+	import { blobToBase64 } from "@gradio/upload";
+	import type { FileData } from "@gradio/upload";
 	import { normalise_file } from "@gradio/upload";
 	import { Block } from "@gradio/atoms";
 	import UploadText from "../UploadText.svelte";
-	import { upload_files } from "@gradio/client";
+	import { upload_files as default_upload_files } from "@gradio/client";
 
 	import StatusTracker from "../StatusTracker/StatusTracker.svelte";
 	import type { LoadingStatus } from "../StatusTracker/types";
@@ -26,8 +29,14 @@
 	export let file_types: Array<string> = ["file"];
 	export let root_url: null | string;
 	export let selectable: boolean = false;
-
 	export let loading_status: LoadingStatus;
+	export let container: boolean = false;
+	export let scale: number | null = null;
+	export let min_width: number | undefined = undefined;
+
+	const upload_files =
+		getContext<typeof default_upload_files>("upload_files") ??
+		default_upload_files;
 
 	$: _value = normalise_file(value, root, root_url);
 
@@ -41,7 +50,7 @@
 	}>();
 
 	$: {
-		if (_value !== old_value) {
+		if (JSON.stringify(_value) !== JSON.stringify(old_value)) {
 			old_value = _value;
 			if (_value === null) {
 				dispatch("change");
@@ -52,6 +61,7 @@
 				)
 			) {
 				pending_upload = false;
+				dispatch("change");
 			} else if (mode === "dynamic") {
 				let files = (Array.isArray(_value) ? _value : [_value]).map(
 					(file_data) => file_data.blob!
@@ -69,6 +79,7 @@
 						(Array.isArray(_value) ? _value : [_value]).forEach(
 							async (file_data, i) => {
 								file_data.data = await blobToBase64(file_data.blob!);
+								file_data.blob = undefined;
 							}
 						);
 					} else {
@@ -78,10 +89,11 @@
 									file_data.orig_name = file_data.name;
 									file_data.name = response.files[i];
 									file_data.is_file = true;
+									file_data.blob = undefined;
 								}
 							}
 						);
-						_value = normalise_file(value, root, root_url);
+						old_value = _value = normalise_file(value, root, root_url);
 					}
 					dispatch("change");
 					dispatch("upload");
@@ -98,6 +110,9 @@
 	padding={false}
 	{elem_id}
 	{elem_classes}
+	{container}
+	{scale}
+	{min_width}
 >
 	<StatusTracker
 		{...loading_status}

@@ -9,7 +9,7 @@ How to share your Gradio app:
 5. [Using the API page](#api-page)
 6. [Adding authentication to the page](#authentication)
 7. [Accessing Network Requests](#accessing-the-network-request-directly)
-8. [Mounting within FastAPI](#mounting-within-another-fastapi-app)
+8. [Mounting within FastAPI](#mounting-within-another-fast-api-app)
 9. [Security](#security-and-file-access)
 
 ## Sharing Demos
@@ -24,7 +24,7 @@ This generates a public, shareable link that you can send to anybody! When you s
 
 Keep in mind, however, that these links are publicly accessible, meaning that anyone can use your model for prediction! Therefore, make sure not to expose any sensitive information through the functions you write, or allow any critical changes to occur on your device. If you set `share=False` (the default, except in colab notebooks), only a local link is created, which can be shared by  [port-forwarding](https://www.ssh.com/ssh/tunneling/example)  with specific users. 
 
-<img style="width: 40%" src="/assets/guides/sharing.svg">
+![sharing](https://github.com/gradio-app/gradio/blob/main/guides/assets/sharing.svg?raw=true)
 
 Share links expire after 72 hours.
 
@@ -32,19 +32,29 @@ Share links expire after 72 hours.
 
 If you'd like to have a permanent link to your Gradio demo on the internet, use Hugging Face Spaces. [Hugging Face Spaces](http://huggingface.co/spaces/) provides the infrastructure to permanently host your machine learning model for free! 
 
-You can either drag and drop a folder containing your Gradio model and all related files, or you can point Spaces to your Git repository and Spaces will pull the Gradio app from there. See [this guide how to host on Hugging Face Spaces](https://huggingface.co/blog/gradio-spaces) for more information. 
+After you have [created a free Hugging Face account](https://huggingface.co/join), you have three methods to deploy your Gradio app to Hugging Face Spaces:
+
+1. From terminal: run `gradio deploy` in your app directory. The CLI will gather some basic metadata and then launch your app. To update your space, you can re-run this command or enable the Github Actions option to automatically update the Spaces on `git push`.
+
+2. From your browser: Drag and drop a folder containing your Gradio model and all related files [here](https://huggingface.co/new-space).
+
+3. Connect Spaces with your Git repository and Spaces will pull the Gradio app from there. See [this guide how to host on Hugging Face Spaces](https://huggingface.co/blog/gradio-spaces) for more information. 
 
 <video autoplay muted loop>
-  <source src="/assets/guides/hf_demo.mp4" type="video/mp4" />
+  <source src="https://github.com/gradio-app/gradio/blob/main/guides/assets/hf_demo.mp4?raw=true" type="video/mp4" />
 </video>
+
+Note: Some components, like `gr.Image`, will display a "Share" button only on Spaces, so that users can share the generated output to the Discussions page of the Space easily. You can disable this with `show_share_button`, such as `gr.Image(show_share_button=False)`. 
+
+![Image with show_share_button=True](https://github.com/gradio-app/gradio/blob/main/guides/assets/share_icon.png?raw=true)
 
 ## Embedding Hosted Spaces
 
-Once you have hosted your app on Hugging Face Spaces (or on your own server), you may want to embed the demo on a different website, such as your blog or your portfolio. Embedding an interactive demo allows people to try out the machine learning model that you have built, without needing to download or install anything — right in their browser! The best part is that you can embed interative demos even in static websites, such as GitHub pages.
+Once you have hosted your app on Hugging Face Spaces (or on your own server), you may want to embed the demo on a different website, such as your blog or your portfolio. Embedding an interactive demo allows people to try out the machine learning model that you have built, without needing to download or install anything — right in their browser! The best part is that you can embed interactive demos even in static websites, such as GitHub pages.
 
 There are two ways to embed your Gradio demos. You can find quick links to both options directly on the Hugging Face Space page, in the "Embed this Space" dropdown option:
 
-![Embed this Space dropdown option](/assets/guides/embed_this_space.png)
+![Embed this Space dropdown option](https://github.com/gradio-app/gradio/blob/main/guides/assets/embed_this_space.png?raw=true)
 
 ### Embedding with Web Components
 
@@ -54,21 +64,23 @@ To embed with Web Components:
 
 1. Import the gradio JS library into into your site by adding the script below in your site (replace {GRADIO_VERSION} in the URL with the library version of Gradio you are using). 
 
-    ```html
-&lt;script type="module"
+```html
+<script type="module"
 src="https://gradio.s3-us-west-2.amazonaws.com/{GRADIO_VERSION}/gradio.js">
-&lt;/script>
-    ```
+</script>
+```
 
 2. Add 
-    ```html
-&lt;gradio-app src="https://$your_space_host.hf.space">&lt;/gradio-app>
-    ```
+```html
+<gradio-app src="https://$your_space_host.hf.space"></gradio-app>
+```
+
 element where you want to place the app. Set the `src=` attribute to your Space's embed URL, which you can find in the "Embed this Space" button. For example:
 
-    ```html
-&lt;gradio-app src="https://abidlabs-pytorch-image-classifier.hf.space">&lt;/gradio-app>
-    ```
+
+```html
+<gradio-app src="https://abidlabs-pytorch-image-classifier.hf.space"></gradio-app>
+```
 
 <script>
 fetch("https://pypi.org/pypi/gradio/json"
@@ -87,54 +99,51 @@ You can also customize the appearance and behavior of your web component with at
 * `src`: as we've seen, the `src` attributes links to the URL of the hosted Gradio demo that you would like to embed
 * `space`: an optional shorthand if your Gradio demo is hosted on Hugging Face Space. Accepts a `username/space_name` instead of a full URL. Example: `gradio/Echocardiogram-Segmentation`. If this attribute attribute is provided, then `src` does not need to be provided.
 * `control_page_title`: a boolean designating whether the html title of the page should be set to the title of the Gradio app (by default `"false"`)
-* `initial_height`: the intial height of the web component while it is loading the Gradio app, (by default `"300px"`). Note that the final height is set based on the size of the Gradio app.
+* `initial_height`: the initial height of the web component while it is loading the Gradio app, (by default `"300px"`). Note that the final height is set based on the size of the Gradio app.
 * `container`: whether to show the border frame and information about where the Space is hosted (by default `"true"`)
 * `info`: whether to show just the information about where the Space is hosted underneath the embedded app (by default `"true"`)
 * `autoscroll`: whether to autoscroll to the output when prediction has finished (by default `"false"`)
 * `eager`: whether to load the Gradio app as soon as the page loads (by default `"false"`)
+* `theme_mode`: whether to use the `dark`, `light`, or default `system` theme mode (by default `"system"`)
 
 Here's an example of how to use these attributes to create a Gradio app that does not lazy load and has an initial height of 0px. 
 
 ```html
-&lt;gradio-app space="gradio/Echocardiogram-Segmentation" eager="true" 
-initial_height="0px">&lt;/gradio-app>
+<gradio-app space="gradio/Echocardiogram-Segmentation" eager="true" 
+initial_height="0px"></gradio-app>
 ```
 
 _Note: While Gradio's CSS will never impact the embedding page, the embedding page can affect the style of the embedded Gradio app. Make sure that any CSS in the parent page isn't so general that it could also apply to the embedded Gradio app and cause the styling to break. Element selectors such as `header { ... }` and `footer { ... }` will be the most likely to cause issues._
 
 ### Embedding with IFrames
 
-To embed with IFrames instead (if you cannot add javascript to your website, for example),  add this element:
+To embed with IFrames instead (if you cannot add javascript to your website, for example), add this element:
 
 ```html
-&lt;iframe src="https://$your_space_host.hf.space">&lt;/iframe>
+<iframe src="https://$your_space_host.hf.space"></iframe>
 ```
 
 Again, you can find the `src=` attribute to your Space's embed URL, which you can find in the "Embed this Space" button.
 
-You'll also need to add a fixed `height` manually as well as other regular iframe attributes. For example: 
-
-```html
-&lt;iframe src="https://abidlabs-pytorch-image-classifier.hf.space" frameBorder="0" height="900">&lt;/iframe>
-```
+Note: if you use IFrames, you'll probably want to add a fixed `height` attribute and set `style="border:0;"` to remove the boreder. In addition, if your app requires permissions such as access to the webcam or the microphone, you'll need to provide that as well using the `allow` attribute.
 
 ## API Page
 
-$demo_hello_world
+You can use almost any Gradio app as an API! In the footer of a Gradio app [like this one](https://huggingface.co/spaces/gradio/hello_world), you'll see a "Use via API" link.  
 
-If you click and open the space above, you'll see a "Use via API" link in the footer of the app. 
+![Use via API](https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/gradio-guides/api3.gif)
 
-![Use via API](/assets/guides/use_via_api.png)
+This is a page that lists the endpoints that can be used to query the Gradio app, via our supported clients: either [the Python client](https://gradio.app/guides/getting-started-with-the-python-client/), or [the JavaScript client](https://gradio.app/guides/getting-started-with-the-js-client/). For each endpoint, Gradio automatically generates the parameters and their types, as well as example inputs.
 
-This is a page that documents the REST API that users can use to query the `Interface` function. `Blocks` apps can also generate an API page, though the API has to be explicitly named for each event listener, such as
+The endpoints are automatically created when you launch a Gradio `Interface`. If you are using Gradio `Blocks`, you can also set up a Gradio API page, though we recommend that you explicitly name each event listener, such as
 
 ```python
 btn.click(add, [num1, num2], output, api_name="addition")
 ```
 
-This will document the endpoint `/api/addition/` to the automatically generated API page. 
+This will add and document the endpoint `/api/addition/` to the automatically generated API page. Otherwise, your API endpoints will appear as "unnamed" endpoints. 
 
-*Note*: For Gradio apps in which [queueing is enabled](https://gradio.app/key-features#queuing), users can bypass the queue if they make a POST request to your API endpoint. To disable this behavior, set `api_open=False` in the `queue()` method.
+*Note*: For Gradio apps in which [queueing is enabled](https://gradio.app/guides/key-features#queuing), users can bypass the queue if they make a POST request to your API endpoint. To disable this behavior, set `api_open=False` in the `queue()` method. To disable the API page altogether, set `show_api=False` in `.launch()`.
 
 ## Authentication
 
@@ -191,14 +200,22 @@ Note that this approach also allows you run your Gradio apps on custom paths (`h
 
 ## Security and File Access
 
-Sharing your Gradio app with others (by hosting it on Spaces, on your own server, or through temporary share links) **exposes** certain files on the host machine to users of your Gradio app. This is done so that Gradio apps are able to display output files created by Gradio or created by your prediction function.
+Sharing your Gradio app with others (by hosting it on Spaces, on your own server, or through temporary share links) **exposes** certain files on the host machine to users of your Gradio app. 
 
-In particular, Gradio apps grant users access to three kinds of files:
+In particular, Gradio apps ALLOW users to access to three kinds of files:
 
-* Files in the same folder (or a subdirectory) of where the Gradio script is launched from. For example, if the path to your gradio scripts is `/home/usr/scripts/project/app.py` and you launch it from `/home/usr/scripts/project/`, then users of your shared Gradio app will be able to access any files inside `/home/usr/scripts/project/`. This is needed so that you can easily reference these files in your Gradio app.
+* **Files in the same directory (or a subdirectory) of where the Gradio script is launched from.** For example, if the path to your gradio scripts is `/home/usr/scripts/project/app.py` and you launch it from `/home/usr/scripts/project/`, then users of your shared Gradio app will be able to access any files inside `/home/usr/scripts/project/`. This is done so that you can easily reference these files in your Gradio app (e.g. for your app's `examples`).
 
-* Temporary files created by Gradio. These are files that are created by Gradio as part of running your prediction function. For example, if your prediction function returns a video file, then Gradio will save that video to a temporary file and then send the path to the temporary file to the front end. 
+* **Temporary files created by Gradio.** These are files that are created by Gradio as part of running your prediction function. For example, if your prediction function returns a video file, then Gradio will save that video to a temporary file and then send the path to the temporary file to the front end. You can customize the location of temporary files created by Gradio by setting the environment variable `GRADIO_TEMP_DIR` to an absolute path, such as `/home/usr/scripts/project/temp/`.
 
-* Files that you explicitly allow via the `file_directories` parameter in `launch()`. In some cases, you may want to reference other files in your file system. The `file_directories` parameter allows you to pass in a list of additional directories you'd like to provide access to. (By default, there are no additional file directories).
+* **Files that you explicitly allow via the `allowed_paths` parameter in `launch()`**. This parameter  allows you to pass in a list of additional directories or exact filepaths you'd like to allow users to have access to. (By default, this parameter is an empty list).
 
-Users should NOT be able to access other arbitrary paths on the host.  
+Gradio DOES NOT ALLOW access to:
+
+* **Dotfiles** (any files whose name begins with `'.'`) or any files that are contained in any directory whose name begins with `'.'`
+
+* **Files that you explicitly allow via the `blocked_paths` parameter in `launch()`**. You can pass in a list of additional directories or exact filepaths to the `blocked_paths` parameter in `launch()`. This parameter takes precedence over the files that Gradio exposes by default or by the `allowed_paths`.
+
+* **Any other paths on the host machine**. Users should NOT be able to access other arbitrary paths on the host. 
+
+Please make sure you are running the latest version of `gradio` for these security settings to apply. 

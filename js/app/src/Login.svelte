@@ -6,7 +6,7 @@
 	export let root: string;
 	export let auth_message: string | null;
 	export let app_mode: boolean;
-	export let is_space: boolean;
+	export let space_id: string | null;
 
 	let username = "";
 	let password = "";
@@ -37,7 +37,7 @@
 		{#if auth_message}
 			<p class="auth">{auth_message}</p>
 		{/if}
-		{#if is_space}
+		{#if space_id}
 			<p class="auth">
 				If you are visiting a HuggingFace Space in Incognito mode, you must
 				enable third party cookies.
@@ -68,14 +68,7 @@
 			/>
 		</Form>
 
-		<Button
-			size="lg"
-			variant="primary"
-			style={{ full_width: true }}
-			on:click={submit}
-		>
-			Login
-		</Button>
+		<Button size="lg" variant="primary" on:click={submit}>Login</Button>
 	</Column>
 </div>
 

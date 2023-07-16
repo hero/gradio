@@ -7,12 +7,14 @@ import os
 import random
 import secrets
 import sys
+import threading
 import time
 import warnings
 import webbrowser
 from abc import abstractmethod
+from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Set, Tuple, Type
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
 
 import anyio
 import requests
@@ -20,9 +22,10 @@ from anyio import CapacityLimiter
 from gradio_client import serializing
 from gradio_client import utils as client_utils
 from gradio_client.documentation import document, set_documentation_group
-from typing_extensions import Literal
+from packaging import version
 
 from gradio import (
+    analytics,
     components,
     external,
     networking,
@@ -31,14 +34,25 @@ from gradio import (
     strings,
     themes,
     utils,
+    wasm_utils,
 )
 from gradio.context import Context
-from gradio.deprecation import check_deprecated_parameters
-from gradio.exceptions import DuplicateBlockError, InvalidApiName
+from gradio.deprecation import check_deprecated_parameters, warn_deprecation
+from gradio.exceptions import (
+    DuplicateBlockError,
+    InvalidApiNameError,
+    InvalidBlockError,
+)
 from gradio.helpers import EventData, create_tracker, skip, special_args
 from gradio.themes import Default as DefaultTheme
 from gradio.themes import ThemeClass as Theme
-from gradio.tunneling import CURRENT_TUNNELS
+from gradio.tunneling import (
+    BINARY_FILENAME,
+    BINARY_FOLDER,
+    BINARY_PATH,
+    BINARY_URL,
+    CURRENT_TUNNELS,
+)
 from gradio.utils import (
     GRADIO_VERSION,
     TupleNoPrint,
@@ -49,6 +63,11 @@ from gradio.utils import (
     get_continuous_fn,
 )
 
+try:
+    import spaces  # type: ignore
+except Exception:
+    spaces = None
+
 set_documentation_group("blocks")
 
 if TYPE_CHECKING:  # Only import for type checking (is False at runtime).
@@ -56,7 +75,7 @@ if TYPE_CHECKING:  # Only import for type checking (is False at runtime).
 
     from gradio.components import Component
 
-BUILT_IN_THEMES: Dict[str, Theme] = {
+BUILT_IN_THEMES: dict[str, Theme] = {
     t.name: t
     for t in [
         themes.Base(),
@@ -74,7 +93,7 @@ class Block:
         *,
         render: bool = True,
         elem_id: str | None = None,
-        elem_classes: List[str] | str | None = None,
+        elem_classes: list[str] | str | None = None,
         visible: bool = True,
         root_url: str | None = None,  # URL that is prepended to all file paths
         _skip_init_processing: bool = False,  # Used for loading from Spaces
@@ -90,13 +109,11 @@ class Block:
         self.root_url = root_url
         self.share_token = secrets.token_urlsafe(32)
         self._skip_init_processing = _skip_init_processing
-        self._style = {}
         self.parent: BlockContext | None = None
-        self.root = ""
 
         if render:
             self.render()
-        check_deprecated_parameters(self.__class__.__name__, **kwargs)
+        check_deprecated_parameters(self.__class__.__name__, kwargs=kwargs)
 
     def render(self):
         """
@@ -145,31 +162,31 @@ class Block:
             else self.__class__.__name__.lower()
         )
 
-    def get_expected_parent(self) -> Type[BlockContext] | None:
+    def get_expected_parent(self) -> type[BlockContext] | None:
         return None
 
     def set_event_trigger(
         self,
         event_name: str,
         fn: Callable | None,
-        inputs: Component | List[Component] | Set[Component] | None,
-        outputs: Component | List[Component] | None,
+        inputs: Component | list[Component] | set[Component] | None,
+        outputs: Component | list[Component] | None,
         preprocess: bool = True,
         postprocess: bool = True,
         scroll_to_output: bool = False,
-        show_progress: bool = True,
-        api_name: str | None = None,
+        show_progress: str = "full",
+        api_name: str | None | Literal[False] = None,
         js: str | None = None,
         no_target: bool = False,
         queue: bool | None = None,
         batch: bool = False,
         max_batch_size: int = 4,
-        cancels: List[int] | None = None,
+        cancels: list[int] | None = None,
         every: float | None = None,
         collects_event_data: bool | None = None,
         trigger_after: int | None = None,
         trigger_only_on_success: bool = False,
-    ) -> Tuple[Dict[str, Any], int]:
+    ) -> tuple[dict[str, Any], int]:
         """
         Adds an event to the component's dependencies.
         Parameters:
@@ -181,7 +198,7 @@ class Block:
             postprocess: whether to run the postprocess methods of components
             scroll_to_output: whether to scroll to output of dependency on trigger
             show_progress: whether to show progress animation while running.
-            api_name: Defining this parameter exposes the endpoint in the api docs
+            api_name: defines how the endpoint appears in the API docs. Can be a string, None, or False. If False, the endpoint will not be exposed in the api docs. If set to None, the endpoint will be exposed in the api docs as an unnamed endpoint, although this behavior will be changed in Gradio 4.0. If set to a string, the endpoint will be exposed in the api docs with the given name.
             js: Experimental parameter (API may change): Optional frontend js method to run before running 'fn'. Input arguments for js method are values of 'inputs' and 'outputs', return should be a list of values for output components
             no_target: if True, sets "targets" to [], used for Blocks "load" event
             queue: If True, will place the request on the queue, if the queue has been enabled. If False, will not put this event on the queue, even if the queue has been enabled. If None, will use the queue setting of the gradio app.
@@ -247,14 +264,12 @@ class Block:
                 progress_index is not None,
             )
         )
-        if api_name is not None:
+        if api_name is not None and api_name is not False:
             api_name_ = utils.append_unique_suffix(
                 api_name, [dep["api_name"] for dep in Context.root_block.dependencies]
             )
-            if not (api_name == api_name_):
-                warnings.warn(
-                    "api_name {} already exists, using {}".format(api_name, api_name_)
-                )
+            if api_name != api_name_:
+                warnings.warn(f"api_name {api_name} already exists, using {api_name_}")
                 api_name = api_name_
 
         if collects_event_data is None:
@@ -269,7 +284,7 @@ class Block:
             "js": js,
             "queue": False if fn is None else queue,
             "api_name": api_name,
-            "scroll_to_output": scroll_to_output,
+            "scroll_to_output": False if utils.get_space() else scroll_to_output,
             "show_progress": show_progress,
             "every": every,
             "batch": batch,
@@ -291,17 +306,16 @@ class Block:
             "visible": self.visible,
             "elem_id": self.elem_id,
             "elem_classes": self.elem_classes,
-            "style": self._style,
             "root_url": self.root_url,
         }
 
     @staticmethod
     @abstractmethod
-    def update(**kwargs) -> Dict:
+    def update(**kwargs) -> dict:
         return {}
 
     @classmethod
-    def get_specific_update(cls, generic_update: Dict[str, Any]) -> Dict:
+    def get_specific_update(cls, generic_update: dict[str, Any]) -> dict:
         generic_update = generic_update.copy()
         del generic_update["__type__"]
         specific_update = cls.update(**generic_update)
@@ -320,8 +334,11 @@ class BlockContext(Block):
             visible: If False, this will be hidden but included in the Blocks config file (its visibility can later be updated).
             render: If False, this will not be included in the Blocks config file at all.
         """
-        self.children: List[Block] = []
+        self.children: list[Block] = []
         Block.__init__(self, visible=visible, render=render, **kwargs)
+
+    def add_child(self, child: Block):
+        self.children.append(child)
 
     def __enter__(self):
         self.parent = Context.block
@@ -344,11 +361,12 @@ class BlockContext(Block):
                 if pseudo_parent is not None and isinstance(
                     pseudo_parent, expected_parent
                 ):
-                    pseudo_parent.children.append(child)
+                    pseudo_parent.add_child(child)
                 else:
                     pseudo_parent = expected_parent(render=False)
+                    pseudo_parent.parent = self
                     children.append(pseudo_parent)
-                    pseudo_parent.children = [child]
+                    pseudo_parent.add_child(child)
                     if Context.root_block:
                         Context.root_block.blocks[pseudo_parent._id] = pseudo_parent
                 child.parent = pseudo_parent
@@ -370,8 +388,8 @@ class BlockFunction:
     def __init__(
         self,
         fn: Callable | None,
-        inputs: List[Component],
-        outputs: List[Component],
+        inputs: list[Component],
+        outputs: list[Component],
         preprocess: bool,
         postprocess: bool,
         inputs_as_dict: bool,
@@ -387,6 +405,14 @@ class BlockFunction:
         self.total_runs = 0
         self.inputs_as_dict = inputs_as_dict
         self.name = getattr(fn, "__name__", "fn") if fn is not None else None
+        self.spaces_auto_wrap()
+
+    def spaces_auto_wrap(self):
+        if spaces is None:
+            return
+        if utils.get_space() is None:
+            return
+        self.fn = spaces.gradio_auto_wrap(self.fn)
 
     def __str__(self):
         return str(
@@ -401,13 +427,13 @@ class BlockFunction:
         return str(self)
 
 
-class class_or_instancemethod(classmethod):
+class class_or_instancemethod(classmethod):  # noqa: N801
     def __get__(self, instance, type_):
         descr_get = super().__get__ if instance is None else self.__func__.__get__
         return descr_get(instance, type_)
 
 
-def postprocess_update_dict(block: Block, update_dict: Dict, postprocess: bool = True):
+def postprocess_update_dict(block: Block, update_dict: dict, postprocess: bool = True):
     """
     Converts a dictionary of updates into a format that can be sent to the frontend.
     E.g. {"__type__": "generic_update", "value": "2", "interactive": False}
@@ -435,15 +461,15 @@ def postprocess_update_dict(block: Block, update_dict: Dict, postprocess: bool =
 
 
 def convert_component_dict_to_list(
-    outputs_ids: List[int], predictions: Dict
-) -> List | Dict:
+    outputs_ids: list[int], predictions: dict
+) -> list | dict:
     """
     Converts a dictionary of component updates into a list of updates in the order of
     the outputs_ids and including every output component. Leaves other types of dictionaries unchanged.
     E.g. {"textbox": "hello", "number": {"__type__": "generic_update", "value": "2"}}
     Into -> ["hello", {"__type__": "generic_update"}, {"__type__": "generic_update", "value": "2"}]
     """
-    keys_are_blocks = [isinstance(key, Block) for key in predictions.keys()]
+    keys_are_blocks = [isinstance(key, Block) for key in predictions]
     if all(keys_are_blocks):
         reordered_predictions = [skip() for _ in outputs_ids]
         for component, value in predictions.items():
@@ -461,7 +487,7 @@ def convert_component_dict_to_list(
     return predictions
 
 
-def get_api_info(config: Dict, serialize: bool = True):
+def get_api_info(config: dict, serialize: bool = True):
     """
     Gets the information needed to generate the API docs from a Blocks config.
     Parameters:
@@ -470,10 +496,14 @@ def get_api_info(config: Dict, serialize: bool = True):
     """
     api_info = {"named_endpoints": {}, "unnamed_endpoints": {}}
     mode = config.get("mode", None)
+    after_new_format = version.parse(config.get("version", "2.0")) > version.Version(
+        "3.28.3"
+    )
 
     for d, dependency in enumerate(config["dependencies"]):
         dependency_info = {"parameters": [], "returns": []}
         skip_endpoint = False
+        skip_components = ["state"]
 
         inputs = dependency["inputs"]
         for i in inputs:
@@ -481,44 +511,51 @@ def get_api_info(config: Dict, serialize: bool = True):
                 if component["id"] == i:
                     break
             else:
-                skip_endpoint = True  # if component not found, skip this endpoint
+                skip_endpoint = True  # if component not found, skip endpoint
                 break
             type = component["type"]
             if (
                 not component.get("serializer")
                 and type not in serializing.COMPONENT_MAPPING
             ):
-                skip_endpoint = (
-                    True  # if component is not serializable, skip this endpoint
-                )
+                skip_endpoint = True  # if component not serializable, skip endpoint
                 break
+            if type in skip_components:
+                continue
             label = component["props"].get("label", f"parameter_{i}")
             # The config has the most specific API info (taking into account the parameters
             # of the component), so we use that if it exists. Otherwise, we fallback to the
             # Serializer's API info.
-            if component.get("api_info"):
-                if serialize:
-                    info = component["api_info"]["serialized_input"]
-                    example = component["example_inputs"]["serialized"]
-                else:
-                    info = component["api_info"]["raw_input"]
-                    example = component["example_inputs"]["raw"]
+            serializer = serializing.COMPONENT_MAPPING[type]()
+            if component.get("api_info") and after_new_format:
+                info = component["api_info"]
+                example = component["example_inputs"]["serialized"]
             else:
-                serializer = serializing.COMPONENT_MAPPING[type]()
                 assert isinstance(serializer, serializing.Serializable)
-                if serialize:
-                    info = serializer.api_info()["serialized_input"]
-                    example = serializer.example_inputs()["serialized"]
-                else:
-                    info = serializer.api_info()["raw_input"]
-                    example = serializer.example_inputs()["raw"]
+                info = serializer.api_info()
+                example = serializer.example_inputs()["raw"]
+            python_info = info["info"]
+            if serialize and info["serialized_info"]:
+                python_info = serializer.serialized_info()
+                if (
+                    isinstance(serializer, serializing.FileSerializable)
+                    and component["props"].get("file_count", "single") != "single"
+                ):
+                    python_info = serializer._multiple_file_serialized_info()
+
+            python_type = client_utils.json_schema_to_python_type(python_info)
+            serializer_name = serializing.COMPONENT_MAPPING[type].__name__
             dependency_info["parameters"].append(
                 {
                     "label": label,
-                    "type_python": info[0],
-                    "type_description": info[1],
+                    "type": info["info"],
+                    "python_type": {
+                        "type": python_type,
+                        "description": python_info.get("description", ""),
+                    },
                     "component": type.capitalize(),
                     "example_input": example,
+                    "serializer": serializer_name,
                 }
             )
 
@@ -528,30 +565,46 @@ def get_api_info(config: Dict, serialize: bool = True):
                 if component["id"] == o:
                     break
             else:
-                skip_endpoint = True  # if component not found, skip this endpoint
+                skip_endpoint = True  # if component not found, skip endpoint
                 break
             type = component["type"]
             if (
                 not component.get("serializer")
                 and type not in serializing.COMPONENT_MAPPING
             ):
-                skip_endpoint = (
-                    True  # if component is not serializable, skip this endpoint
-                )
+                skip_endpoint = True  # if component not serializable, skip endpoint
                 break
+            if type in skip_components:
+                continue
             label = component["props"].get("label", f"value_{o}")
             serializer = serializing.COMPONENT_MAPPING[type]()
-            assert isinstance(serializer, serializing.Serializable)
-            if serialize:
-                info = serializer.api_info()["serialized_output"]
+            if component.get("api_info") and after_new_format:
+                info = component["api_info"]
+                example = component["example_inputs"]["serialized"]
             else:
-                info = serializer.api_info()["raw_output"]
+                assert isinstance(serializer, serializing.Serializable)
+                info = serializer.api_info()
+                example = serializer.example_inputs()["raw"]
+            python_info = info["info"]
+            if serialize and info["serialized_info"]:
+                python_info = serializer.serialized_info()
+                if (
+                    isinstance(serializer, serializing.FileSerializable)
+                    and component["props"].get("file_count", "single") != "single"
+                ):
+                    python_info = serializer._multiple_file_serialized_info()
+            python_type = client_utils.json_schema_to_python_type(python_info)
+            serializer_name = serializing.COMPONENT_MAPPING[type].__name__
             dependency_info["returns"].append(
                 {
                     "label": label,
-                    "type_python": info[0],
-                    "type_description": info[1],
+                    "type": info["info"],
+                    "python_type": {
+                        "type": python_type,
+                        "description": python_info.get("description", ""),
+                    },
                     "component": type.capitalize(),
+                    "serializer": serializer_name,
                 }
             )
 
@@ -560,9 +613,13 @@ def get_api_info(config: Dict, serialize: bool = True):
 
         if skip_endpoint:
             continue
-        if dependency["api_name"]:
-            api_info["named_endpoints"]["/" + dependency["api_name"]] = dependency_info
-        elif mode == "interface" or mode == "tabbed_interface":
+        if dependency["api_name"] is not None and dependency["api_name"] is not False:
+            api_info["named_endpoints"][f"/{dependency['api_name']}"] = dependency_info
+        elif (
+            dependency["api_name"] is False
+            or mode == "interface"
+            or mode == "tabbed_interface"
+        ):
             pass  # Skip unnamed endpoints in interface mode
         else:
             api_info["unnamed_endpoints"][str(d)] = dependency_info
@@ -603,7 +660,7 @@ class Blocks(BlockContext):
 
         demo.launch()
     Demos: blocks_hello, blocks_flipper, blocks_speech_text_sentiment, generate_english_german, sound_alert
-    Guides: blocks_and_event_listeners, controlling_layout, state_in_blocks, custom_CSS_and_JS, custom_interpretations_with_blocks, using_blocks_like_functions
+    Guides: blocks-and-event-listeners, controlling-layout, state-in-blocks, custom-CSS-and-JS, custom-interpretations-with-blocks, using-blocks-like-functions
     """
 
     def __init__(
@@ -623,9 +680,7 @@ class Blocks(BlockContext):
             title: The tab title to display when this is opened in a browser window.
             css: custom css or path to custom css file to apply to entire Blocks
         """
-        # Cleanup shared parameters with Interface #TODO: is this part still necessary after Interface with Blocks?
         self.limiter = None
-        self.save_to = None
         if theme is None:
             theme = DefaultTheme()
         elif isinstance(theme, str):
@@ -659,13 +714,16 @@ class Blocks(BlockContext):
         self.analytics_enabled = (
             analytics_enabled
             if analytics_enabled is not None
-            else os.getenv("GRADIO_ANALYTICS_ENABLED", "True") == "True"
+            else analytics.analytics_enabled()
         )
-        if not self.analytics_enabled:
+        if self.analytics_enabled:
+            t = threading.Thread(target=analytics.version_check)
+            t.start()
+        else:
             os.environ["HF_HUB_DISABLE_TELEMETRY"] = "True"
         super().__init__(render=False, **kwargs)
-        self.blocks: Dict[int, Block] = {}
-        self.fns: List[BlockFunction] = []
+        self.blocks: dict[int, Block] = {}
+        self.fns: list[BlockFunction] = []
         self.dependencies = []
         self.mode = mode
 
@@ -676,7 +734,7 @@ class Blocks(BlockContext):
         self.height = None
         self.api_open = True
 
-        self.is_space = True if os.getenv("SYSTEM") == "spaces" else False
+        self.space_id = utils.get_space()
         self.favicon_path = None
         self.auth = None
         self.dev_mode = True
@@ -692,10 +750,14 @@ class Blocks(BlockContext):
         self.__name__ = None
         self.api_mode = None
         self.progress_tracking = None
+        self.ssl_verify = True
 
-        self.file_directories = []
+        self.allowed_paths = []
+        self.blocked_paths = []
+        self.root_path = ""
+        self.root_urls = set()
 
-        if self.analytics_enabled:
+        if not wasm_utils.IS_WASM and self.analytics_enabled:
             is_custom_theme = not any(
                 self.theme.to_dict() == built_in_theme.to_dict()
                 for built_in_theme in BUILT_IN_THEMES.values()
@@ -707,44 +769,53 @@ class Blocks(BlockContext):
                 "is_custom_theme": is_custom_theme,
                 "version": GRADIO_VERSION,
             }
-            utils.initiated_analytics(data)
+            analytics.initiated_analytics(data)
 
     @classmethod
     def from_config(
         cls,
         config: dict,
-        fns: List[Callable],
-        root_url: str | None = None,
+        fns: list[Callable],
+        root_url: str,
     ) -> Blocks:
         """
-        Factory method that creates a Blocks from a config and list of functions.
+        Factory method that creates a Blocks from a config and list of functions. Used
+        internally by the gradio.external.load() method.
 
         Parameters:
         config: a dictionary containing the configuration of the Blocks.
         fns: a list of functions that are used in the Blocks. Must be in the same order as the dependencies in the config.
-        root_url: an optional root url to use for the components in the Blocks. Allows serving files from an external URL.
+        root_url: an external url to use as a root URL when serving files for components in the Blocks.
         """
         config = copy.deepcopy(config)
         components_config = config["components"]
+        for component_config in components_config:
+            # for backwards compatibility, extract style into props
+            if "style" in component_config["props"]:
+                component_config["props"].update(component_config["props"]["style"])
+                del component_config["props"]["style"]
         theme = config.get("theme", "default")
-        original_mapping: Dict[int, Block] = {}
+        original_mapping: dict[int, Block] = {}
+        root_urls = {root_url}
 
         def get_block_instance(id: int) -> Block:
             for block_config in components_config:
                 if block_config["id"] == id:
                     break
             else:
-                raise ValueError("Cannot find block with id {}".format(id))
+                raise ValueError(f"Cannot find block with id {id}")
             cls = component_or_layout_class(block_config["type"])
             block_config["props"].pop("type", None)
             block_config["props"].pop("name", None)
-            style = block_config["props"].pop("style", None)
-            if block_config["props"].get("root_url") is None and root_url:
-                block_config["props"]["root_url"] = root_url + "/"
+            # If a Gradio app B is loaded into a Gradio app A, and B itself loads a
+            # Gradio app C, then the root_urls of the components in A need to be the
+            # URL of C, not B. The else clause below handles this case.
+            if block_config["props"].get("root_url") is None:
+                block_config["props"]["root_url"] = f"{root_url}/"
+            else:
+                root_urls.add(block_config["props"]["root_url"])
             # Any component has already processed its initial value, so we skip that step here
             block = cls(**block_config["props"], _skip_init_processing=True)
-            if style and isinstance(block, components.IOComponent):
-                block.style(**style)
             return block
 
         def iterate_over_children(children_list):
@@ -816,6 +887,7 @@ class Blocks(BlockContext):
                 blocks.__name__ = "Interface"
                 blocks.api_mode = True
 
+        blocks.root_urls = root_urls
         return blocks
 
     def __str__(self):
@@ -824,18 +896,18 @@ class Blocks(BlockContext):
     def __repr__(self):
         num_backend_fns = len([d for d in self.dependencies if d["backend_fn"]])
         repr = f"Gradio Blocks instance: {num_backend_fns} backend functions"
-        repr += "\n" + "-" * len(repr)
+        repr += f"\n{'-' * len(repr)}"
         for d, dependency in enumerate(self.dependencies):
             if dependency["backend_fn"]:
                 repr += f"\nfn_index={d}"
                 repr += "\n inputs:"
                 for input_id in dependency["inputs"]:
                     block = self.blocks[input_id]
-                    repr += "\n |-{}".format(str(block))
+                    repr += f"\n |-{block}"
                 repr += "\n outputs:"
                 for output_id in dependency["outputs"]:
                     block = self.blocks[output_id]
-                    repr += "\n |-{}".format(str(block))
+                    repr += f"\n |-{block}"
         return repr
 
     def render(self):
@@ -844,26 +916,27 @@ class Blocks(BlockContext):
                 raise DuplicateBlockError(
                     f"A block with id: {self._id} has already been rendered in the current Blocks."
                 )
-            if not set(Context.root_block.blocks).isdisjoint(self.blocks):
-                raise DuplicateBlockError(
-                    "At least one block in this Blocks has already been rendered."
-                )
+            overlapping_ids = set(Context.root_block.blocks).intersection(self.blocks)
+            for id in overlapping_ids:
+                # State components are allowed to be reused between Blocks
+                if not isinstance(self.blocks[id], components.State):
+                    raise DuplicateBlockError(
+                        "At least one block in this Blocks has already been rendered."
+                    )
 
             Context.root_block.blocks.update(self.blocks)
             Context.root_block.fns.extend(self.fns)
             dependency_offset = len(Context.root_block.dependencies)
             for i, dependency in enumerate(self.dependencies):
                 api_name = dependency["api_name"]
-                if api_name is not None:
+                if api_name is not None and api_name is not False:
                     api_name_ = utils.append_unique_suffix(
                         api_name,
                         [dep["api_name"] for dep in Context.root_block.dependencies],
                     )
-                    if not (api_name == api_name_):
+                    if api_name != api_name_:
                         warnings.warn(
-                            "api_name {} already exists, using {}".format(
-                                api_name, api_name_
-                            )
+                            f"api_name {api_name} already exists, using {api_name_}"
                         )
                         dependency["api_name"] = api_name_
                 dependency["cancels"] = [
@@ -890,6 +963,7 @@ class Blocks(BlockContext):
                     Context.root_block.fns[dependency_offset + i] = new_fn
                 Context.root_block.dependencies.append(dependency)
             Context.root_block.temp_file_sets.extend(self.temp_file_sets)
+            Context.root_block.root_urls.update(self.root_urls)
 
         if Context.block is not None:
             Context.block.children.extend(self.children)
@@ -936,7 +1010,9 @@ class Blocks(BlockContext):
                 None,
             )
             if inferred_fn_index is None:
-                raise InvalidApiName(f"Cannot find a function with api_name {api_name}")
+                raise InvalidApiNameError(
+                    f"Cannot find a function with api_name {api_name}"
+                )
             fn_index = inferred_fn_index
         if not (self.is_callable(fn_index)):
             raise ValueError(
@@ -969,9 +1045,9 @@ class Blocks(BlockContext):
     async def call_function(
         self,
         fn_index: int,
-        processed_input: List[Any],
-        iterator: Iterator[Any] | None = None,
-        requests: routes.Request | List[routes.Request] | None = None,
+        processed_input: list[Any],
+        iterator: AsyncIterator[Any] | None = None,
+        requests: routes.Request | list[routes.Request] | None = None,
         event_id: str | None = None,
         event_data: EventData | None = None,
     ):
@@ -990,17 +1066,9 @@ class Blocks(BlockContext):
         is_generating = False
 
         if block_fn.inputs_as_dict:
-            processed_input = [
-                {
-                    input_component: data
-                    for input_component, data in zip(block_fn.inputs, processed_input)
-                }
-            ]
+            processed_input = [dict(zip(block_fn.inputs, processed_input))]
 
-        if isinstance(requests, list):
-            request = requests[0]
-        else:
-            request = requests
+        request = requests[0] if isinstance(requests, list) else requests
         processed_input, progress_index, _ = special_args(
             block_fn.fn, processed_input, request, event_data
         )
@@ -1010,14 +1078,14 @@ class Blocks(BlockContext):
 
         start = time.time()
 
+        fn = utils.get_function_with_locals(block_fn.fn, self, event_id)
+
         if iterator is None:  # If not a generator function that has already run
             if progress_tracker is not None and progress_index is not None:
                 progress_tracker, fn = create_tracker(
-                    self, event_id, block_fn.fn, progress_tracker.track_tqdm
+                    self, event_id, fn, progress_tracker.track_tqdm
                 )
                 processed_input[progress_index] = progress_tracker
-            else:
-                fn = block_fn.fn
 
             if inspect.iscoroutinefunction(fn):
                 prediction = await fn(*processed_input)
@@ -1028,17 +1096,15 @@ class Blocks(BlockContext):
         else:
             prediction = None
 
-        if inspect.isasyncgenfunction(block_fn.fn):
-            raise ValueError("Gradio does not support async generators.")
-        if inspect.isgeneratorfunction(block_fn.fn):
+        if inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn):
             if not self.enable_queue:
                 raise ValueError("Need to enable queue to use generators.")
             try:
                 if iterator is None:
-                    iterator = prediction
-                prediction = await anyio.to_thread.run_sync(
-                    utils.async_iteration, iterator, limiter=self.limiter
-                )
+                    iterator = cast(AsyncIterator[Any], prediction)
+                if inspect.isgenerator(iterator):
+                    iterator = utils.SyncToAsyncIterator(iterator, self.limiter)
+                prediction = await utils.async_iteration(iterator)
                 is_generating = True
             except StopAsyncIteration:
                 n_outputs = len(self.dependencies[fn_index].get("outputs"))
@@ -1058,12 +1124,17 @@ class Blocks(BlockContext):
             "iterator": iterator,
         }
 
-    def serialize_data(self, fn_index: int, inputs: List[Any]) -> List[Any]:
+    def serialize_data(self, fn_index: int, inputs: list[Any]) -> list[Any]:
         dependency = self.dependencies[fn_index]
         processed_input = []
 
         for i, input_id in enumerate(dependency["inputs"]):
-            block = self.blocks[input_id]
+            try:
+                block = self.blocks[input_id]
+            except KeyError as e:
+                raise InvalidBlockError(
+                    f"Input component with id {input_id} used in {dependency['trigger']}() event is not defined in this gr.Blocks context. You are allowed to nest gr.Blocks contexts, but there must be a gr.Blocks context that contains all components and events."
+                ) from e
             assert isinstance(
                 block, components.IOComponent
             ), f"{block.__class__} Component with id {input_id} not a valid input component."
@@ -1072,23 +1143,31 @@ class Blocks(BlockContext):
 
         return processed_input
 
-    def deserialize_data(self, fn_index: int, outputs: List[Any]) -> List[Any]:
+    def deserialize_data(self, fn_index: int, outputs: list[Any]) -> list[Any]:
         dependency = self.dependencies[fn_index]
         predictions = []
 
         for o, output_id in enumerate(dependency["outputs"]):
-            block = self.blocks[output_id]
+            try:
+                block = self.blocks[output_id]
+            except KeyError as e:
+                raise InvalidBlockError(
+                    f"Output component with id {output_id} used in {dependency['trigger']}() event not found in this gr.Blocks context. You are allowed to nest gr.Blocks contexts, but there must be a gr.Blocks context that contains all components and events."
+                ) from e
             assert isinstance(
                 block, components.IOComponent
             ), f"{block.__class__} Component with id {output_id} not a valid output component."
             deserialized = block.deserialize(
-                outputs[o], root_url=block.root_url, hf_token=Context.hf_token
+                outputs[o],
+                save_dir=block.DEFAULT_TEMP_DIR,
+                root_url=block.root_url,
+                hf_token=Context.hf_token,
             )
             predictions.append(deserialized)
 
         return predictions
 
-    def validate_inputs(self, fn_index: int, inputs: List[Any]):
+    def validate_inputs(self, fn_index: int, inputs: list[Any]):
         block_fn = self.fns[fn_index]
         dependency = self.dependencies[fn_index]
 
@@ -1110,10 +1189,7 @@ class Blocks(BlockContext):
                 block = self.blocks[input_id]
                 wanted_args.append(str(block))
             for inp in inputs:
-                if isinstance(inp, str):
-                    v = f'"{inp}"'
-                else:
-                    v = str(inp)
+                v = f'"{inp}"' if isinstance(inp, str) else str(inp)
                 received_args.append(v)
 
             wanted = ", ".join(wanted_args)
@@ -1129,7 +1205,7 @@ Received inputs:
     [{received}]"""
             )
 
-    def preprocess_data(self, fn_index: int, inputs: List[Any], state: Dict[int, Any]):
+    def preprocess_data(self, fn_index: int, inputs: list[Any], state: dict[int, Any]):
         block_fn = self.fns[fn_index]
         dependency = self.dependencies[fn_index]
 
@@ -1138,7 +1214,12 @@ Received inputs:
         if block_fn.preprocess:
             processed_input = []
             for i, input_id in enumerate(dependency["inputs"]):
-                block = self.blocks[input_id]
+                try:
+                    block = self.blocks[input_id]
+                except KeyError as e:
+                    raise InvalidBlockError(
+                        f"Input component with id {input_id} used in {dependency['trigger']}() event not found in this gr.Blocks context. You are allowed to nest gr.Blocks contexts, but there must be a gr.Blocks context that contains all components and events."
+                    ) from e
                 assert isinstance(
                     block, components.Component
                 ), f"{block.__class__} Component with id {input_id} not a valid input component."
@@ -1150,7 +1231,7 @@ Received inputs:
             processed_input = inputs
         return processed_input
 
-    def validate_outputs(self, fn_index: int, predictions: Any | List[Any]):
+    def validate_outputs(self, fn_index: int, predictions: Any | list[Any]):
         block_fn = self.fns[fn_index]
         dependency = self.dependencies[fn_index]
 
@@ -1172,10 +1253,7 @@ Received inputs:
                 block = self.blocks[output_id]
                 wanted_args.append(str(block))
             for pred in predictions:
-                if isinstance(pred, str):
-                    v = f'"{pred}"'
-                else:
-                    v = str(pred)
+                v = f'"{pred}"' if isinstance(pred, str) else str(pred)
                 received_args.append(v)
 
             wanted = ", ".join(wanted_args)
@@ -1190,7 +1268,7 @@ Received outputs:
             )
 
     def postprocess_data(
-        self, fn_index: int, predictions: List | Dict, state: Dict[int, Any]
+        self, fn_index: int, predictions: list | dict, state: dict[int, Any]
     ):
         block_fn = self.fns[fn_index]
         dependency = self.dependencies[fn_index]
@@ -1214,11 +1292,19 @@ Received outputs:
                 if predictions[i] is components._Keywords.FINISHED_ITERATING:
                     output.append(None)
                     continue
-            except (IndexError, KeyError):
+            except (IndexError, KeyError) as err:
                 raise ValueError(
-                    f"Number of output components does not match number of values returned from from function {block_fn.name}"
-                )
-            block = self.blocks[output_id]
+                    "Number of output components does not match number "
+                    f"of values returned from from function {block_fn.name}"
+                ) from err
+
+            try:
+                block = self.blocks[output_id]
+            except KeyError as e:
+                raise InvalidBlockError(
+                    f"Output component with id {output_id} used in {dependency['trigger']}() event not found in this gr.Blocks context. You are allowed to nest gr.Blocks contexts, but there must be a gr.Blocks context that contains all components and events."
+                ) from e
+
             if getattr(block, "stateful", False):
                 if not utils.is_update(predictions[i]):
                     state[output_id] = predictions[i]
@@ -1244,13 +1330,13 @@ Received outputs:
     async def process_api(
         self,
         fn_index: int,
-        inputs: List[Any],
-        state: Dict[int, Any],
-        request: routes.Request | List[routes.Request] | None = None,
-        iterators: Dict[int, Any] | None = None,
+        inputs: list[Any],
+        state: dict[int, Any],
+        request: routes.Request | list[routes.Request] | None = None,
+        iterators: dict[int, Any] | None = None,
         event_id: str | None = None,
         event_data: EventData | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Processes API calls from the frontend. First preprocesses the data,
         then runs the relevant function, then postprocesses the output.
@@ -1307,7 +1393,6 @@ Received outputs:
 
         block_fn.total_runtime += result["duration"]
         block_fn.total_runs += 1
-
         return {
             "data": data,
             "is_generating": is_generating,
@@ -1335,25 +1420,24 @@ Received outputs:
             "components": [],
             "css": self.css,
             "title": self.title or "Gradio",
-            "is_space": self.is_space,
+            "space_id": self.space_id,
             "enable_queue": getattr(self, "enable_queue", False),  # launch attributes
             "show_error": getattr(self, "show_error", False),
             "show_api": self.show_api,
             "is_colab": utils.colab_check(),
             "stylesheets": self.stylesheets,
-            "root": self.root,
             "theme": self.theme.name,
         }
 
-        def getLayout(block):
+        def get_layout(block):
             if not isinstance(block, BlockContext):
                 return {"id": block._id}
             children_layout = []
             for child in block.children:
-                children_layout.append(getLayout(child))
+                children_layout.append(get_layout(child))
             return {"id": block._id, "children": children_layout}
 
-        config["layout"] = getLayout(self)
+        config["layout"] = get_layout(self)
 
         for _id, block in self.blocks.items():
             props = block.get_config() if hasattr(block, "get_config") else {}
@@ -1396,13 +1480,13 @@ Received outputs:
 
     @class_or_instancemethod
     def load(
-        self_or_cls,
+        self_or_cls,  # noqa: N805
         fn: Callable | None = None,
-        inputs: List[Component] | None = None,
-        outputs: List[Component] | None = None,
-        api_name: str | None = None,
+        inputs: list[Component] | None = None,
+        outputs: list[Component] | None = None,
+        api_name: str | None | Literal[False] = None,
         scroll_to_output: bool = False,
-        show_progress: bool = True,
+        show_progress: str = "full",
         queue=None,
         batch: bool = False,
         max_batch_size: int = 4,
@@ -1416,7 +1500,7 @@ Received outputs:
         api_key: str | None = None,
         alias: str | None = None,
         **kwargs,
-    ) -> Blocks | Dict[str, Any] | None:
+    ) -> Blocks | dict[str, Any] | None:
         """
         For reverse compatibility reasons, this is both a class method and an instance
         method, the two of which, confusingly, do two completely different things.
@@ -1429,12 +1513,12 @@ Received outputs:
         Parameters:
             name: Class Method - the name of the model (e.g. "gpt2" or "facebook/bart-base") or space (e.g. "flax-community/spanish-gpt2"), can include the `src` as prefix (e.g. "models/facebook/bart-base")
             src: Class Method - the source of the model: `models` or `spaces` (or leave empty if source is provided as a prefix in `name`)
-            api_key: Class Method - optional access token for loading private Hugging Face Hub models or spaces. Find your token here: https://huggingface.co/settings/tokens
+            api_key: Class Method - optional access token for loading private Hugging Face Hub models or spaces. Find your token here: https://huggingface.co/settings/tokens. Warning: only provide this if you are loading a trusted private Space as it can be read by the Space you are loading.
             alias: Class Method - optional string used as the name of the loaded model instead of the default name (only applies if loading a Space running Gradio 2.x)
             fn: Instance Method - the function to wrap an interface around. Often a machine learning model's prediction function. Each parameter of the function corresponds to one input component, and the function should return a single value or a tuple of values, with each element in the tuple corresponding to one output component.
             inputs: Instance Method - List of gradio.components to use as inputs. If the function takes no inputs, this should be an empty list.
             outputs: Instance Method - List of gradio.components to use as inputs. If the function returns no outputs, this should be an empty list.
-            api_name: Instance Method - Defining this parameter exposes the endpoint in the api docs
+            api_name: Instance Method - Defines how the endpoint appears in the API docs. Can be a string, None, or False. If False, the endpoint will not be exposed in the api docs. If set to None, the endpoint will be exposed in the api docs as an unnamed endpoint, although this behavior will be changed in Gradio 4.0. If set to a string, the endpoint will be exposed in the api docs with the given name.
             scroll_to_output: Instance Method - If True, will scroll to output component on completion
             show_progress: Instance Method - If True, will show progress animation while pending
             queue: Instance Method - If True, will place the request on the queue, if the queue exists
@@ -1454,7 +1538,9 @@ Received outputs:
             demo.launch()
         """
         if isinstance(self_or_cls, type):
-            warnings.warn("gr.Blocks.load() will be deprecated. Use gr.load() instead.")
+            warn_deprecation(
+                "gr.Blocks.load() will be deprecated. Use gr.load() instead."
+            )
             if name is None:
                 raise ValueError(
                     "Blocks.load() requires passing parameters as keyword arguments"
@@ -1463,7 +1549,9 @@ Received outputs:
                 name=name, src=src, hf_token=api_key, alias=alias, **kwargs
             )
         else:
-            return self_or_cls.set_event_trigger(
+            from gradio.events import Dependency
+
+            dep, dep_index = self_or_cls.set_event_trigger(
                 event_name="load",
                 fn=fn,
                 inputs=inputs,
@@ -1479,7 +1567,8 @@ Received outputs:
                 max_batch_size=max_batch_size,
                 every=every,
                 no_target=True,
-            )[0]
+            )
+            return Dependency(self_or_cls, dep, dep_index)
 
     def clear(self):
         """Resets the layout of the Blocks object."""
@@ -1520,14 +1609,16 @@ Received outputs:
             demo.launch()
         """
         if default_enabled is not None:
-            warnings.warn(
+            warn_deprecation(
                 "The default_enabled parameter of queue has no effect and will be removed "
                 "in a future version of gradio."
             )
         self.enable_queue = True
         self.api_open = api_open
         if client_position_to_load_data is not None:
-            warnings.warn("The client_position_to_load_data parameter is deprecated.")
+            warn_deprecation(
+                "The client_position_to_load_data parameter is deprecated."
+            )
         self._queue = queueing.Queue(
             live_updates=status_update_rate == "auto",
             concurrency_count=concurrency_count,
@@ -1574,7 +1665,7 @@ Received outputs:
         debug: bool = False,
         enable_queue: bool | None = None,
         max_threads: int = 40,
-        auth: Callable | Tuple[str, str] | List[Tuple[str, str]] | None = None,
+        auth: Callable | tuple[str, str] | list[tuple[str, str]] | None = None,
         auth_message: str | None = None,
         prevent_thread_lock: bool = False,
         show_error: bool = False,
@@ -1588,11 +1679,16 @@ Received outputs:
         ssl_keyfile: str | None = None,
         ssl_certfile: str | None = None,
         ssl_keyfile_password: str | None = None,
+        ssl_verify: bool = True,
         quiet: bool = False,
         show_api: bool = True,
-        file_directories: List[str] | None = None,
+        file_directories: list[str] | None = None,
+        allowed_paths: list[str] | None = None,
+        blocked_paths: list[str] | None = None,
+        root_path: str = "",
         _frontend: bool = True,
-    ) -> Tuple[FastAPI, str, str]:
+        app_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[FastAPI, str, str]:
         """
         Launches a simple web server that serves the demo. Can also be used to create a
         public link used by anyone to access the demo from their browser by setting share=True.
@@ -1618,9 +1714,14 @@ Received outputs:
             ssl_keyfile: If a path to a file is provided, will use this as the private key file to create a local server running on https.
             ssl_certfile: If a path to a file is provided, will use this as the signed certificate for https. Needs to be provided if ssl_keyfile is provided.
             ssl_keyfile_password: If a password is provided, will use this with the ssl certificate for https.
+            ssl_verify: If False, skips certificate validation which allows self-signed certificates to be used.
             quiet: If True, suppresses most print statements.
             show_api: If True, shows the api docs in the footer of the app. Default True. If the queue is enabled, then api_open parameter of .queue() will determine if the api docs are shown, independent of the value of show_api.
-            file_directories: List of directories that gradio is allowed to serve files from (in addition to the directory containing the gradio python file). Must be absolute paths. Warning: any files in these directories or its children are potentially accessible to all users of your app.
+            file_directories: This parameter has been renamed to `allowed_paths`. It will be removed in a future version.
+            allowed_paths: List of complete filepaths or parent directories that gradio is allowed to serve (in addition to the directory containing the gradio python file). Must be absolute paths. Warning: if you provide directories, any files in these directories or their subdirectories are accessible to all users of your app.
+            blocked_paths: List of complete filepaths or parent directories that gradio is not allowed to serve (i.e. users of your app are not allowed to access). Must be absolute paths. Warning: takes precedence over `allowed_paths` and all other directories exposed by Gradio by default.
+            root_path: The root path (or "mount point") of the application, if it's not served from the root ("/") of the domain. Often used when the application is behind a reverse proxy that forwards requests to the application. For example, if the application is served at "https://example.com/myapp", the `root_path` should be set to "/myapp".
+            app_kwargs: Additional keyword arguments to pass to the underlying FastAPI app as a dictionary of parameter keys and argument values. For example, `{"docs_url": "/docs"}`
         Returns:
             app: FastAPI app object that is running the demo
             local_url: Locally accessible link to the demo
@@ -1659,20 +1760,21 @@ Received outputs:
         self.height = height
         self.width = width
         self.favicon_path = favicon_path
+        self.ssl_verify = ssl_verify
+        self.root_path = root_path
 
         if enable_queue is not None:
             self.enable_queue = enable_queue
-            warnings.warn(
-                "The `enable_queue` parameter has been deprecated. Please use the `.queue()` method instead.",
-                DeprecationWarning,
+            warn_deprecation(
+                "The `enable_queue` parameter has been deprecated. "
+                "Please use the `.queue()` method instead.",
             )
         if encrypt is not None:
-            warnings.warn(
+            warn_deprecation(
                 "The `encrypt` parameter has been deprecated and has no effect.",
-                DeprecationWarning,
             )
 
-        if self.is_space:
+        if self.space_id:
             self.enable_queue = self.enable_queue is not False
         else:
             self.enable_queue = self.enable_queue is True
@@ -1680,9 +1782,20 @@ Received outputs:
             self.queue()
         self.show_api = self.api_open if self.enable_queue else show_api
 
-        self.file_directories = file_directories if file_directories is not None else []
-        if not isinstance(self.file_directories, list):
-            raise ValueError("file_directories must be a list of directories.")
+        if file_directories is not None:
+            warn_deprecation(
+                "The `file_directories` parameter has been renamed to `allowed_paths`. "
+                "Please use that instead.",
+            )
+            if allowed_paths is None:
+                allowed_paths = file_directories
+        self.allowed_paths = allowed_paths or []
+        self.blocked_paths = blocked_paths or []
+
+        if not isinstance(self.allowed_paths, list):
+            raise ValueError("`allowed_paths` must be a list of directories.")
+        if not isinstance(self.blocked_paths, list):
+            raise ValueError("`blocked_paths` must be a list of directories.")
 
         self.validate_queue_settings()
 
@@ -1700,14 +1813,37 @@ Received outputs:
                     "Rerunning server... use `close()` to stop if you need to change `launch()` parameters.\n----"
                 )
         else:
-            server_name, server_port, local_url, app, server = networking.start_server(
-                self,
-                server_name,
-                server_port,
-                ssl_keyfile,
-                ssl_certfile,
-                ssl_keyfile_password,
-            )
+            if wasm_utils.IS_WASM:
+                server_name = "xxx"
+                server_port = 99999
+                local_url = ""
+                server = None
+
+                # In the Wasm environment, we only need the app object
+                # which the frontend app will directly communicate with through the Worker API,
+                # and we don't need to start a server.
+                # So we just create the app object and register it here,
+                # and avoid using `networking.start_server` that would start a server that don't work in the Wasm env.
+                from gradio.routes import App
+
+                app = App.create_app(self, app_kwargs=app_kwargs)
+                wasm_utils.register_app(app)
+            else:
+                (
+                    server_name,
+                    server_port,
+                    local_url,
+                    app,
+                    server,
+                ) = networking.start_server(
+                    self,
+                    server_name,
+                    server_port,
+                    ssl_keyfile,
+                    ssl_certfile,
+                    ssl_keyfile_password,
+                    app_kwargs=app_kwargs,
+                )
             self.server_name = server_name
             self.local_url = local_url
             self.server_port = server_port
@@ -1716,23 +1852,32 @@ Received outputs:
             self.is_running = True
             self.is_colab = utils.colab_check()
             self.is_kaggle = utils.kaggle_check()
-            self.is_sagemaker = utils.sagemaker_check()
 
             self.protocol = (
                 "https"
                 if self.local_url.startswith("https") or self.is_colab
                 else "http"
             )
+            if not self.is_colab:
+                print(
+                    strings.en["RUNNING_LOCALLY_SEPARATED"].format(
+                        self.protocol, self.server_name, self.server_port
+                    )
+                )
 
             if self.enable_queue:
                 self._queue.set_url(self.local_url)
 
             # Cannot run async functions in background other than app's scope.
             # Workaround by triggering the app endpoint
-            requests.get(f"{self.local_url}startup-events")
+            if not wasm_utils.IS_WASM:
+                requests.get(f"{self.local_url}startup-events", verify=ssl_verify)
+
+        if wasm_utils.IS_WASM:
+            return TupleNoPrint((self.server_app, self.local_url, self.share_url))
 
         utils.launch_counter()
-
+        self.is_sagemaker = utils.sagemaker_check()
         if share is None:
             if self.is_colab and self.enable_queue:
                 if not quiet:
@@ -1761,7 +1906,7 @@ Received outputs:
         # a shareable link must be created.
         if _frontend and (not networking.url_ok(self.local_url)) and (not self.share):
             raise ValueError(
-                "When localhost is not accessible, a shareable link must be created. Please set share=True."
+                "When localhost is not accessible, a shareable link must be created. Please set share=True or check your proxy settings to allow access to localhost."
             )
 
         if self.is_colab:
@@ -1776,15 +1921,9 @@ Received outputs:
                 raise ValueError(
                     "When using queueing in Colab, a shareable link must be created. Please set share=True."
                 )
-        else:
-            print(
-                strings.en["RUNNING_LOCALLY_SEPARATED"].format(
-                    self.protocol, self.server_name, self.server_port
-                )
-            )
 
         if self.share:
-            if self.is_space:
+            if self.space_id:
                 raise RuntimeError("Share is not supported when you are in Spaces")
             try:
                 if self.share_url is None:
@@ -1796,10 +1935,20 @@ Received outputs:
                     print(strings.en["SHARE_LINK_MESSAGE"])
             except (RuntimeError, requests.exceptions.ConnectionError):
                 if self.analytics_enabled:
-                    utils.error_analytics("Not able to set up tunnel")
+                    analytics.error_analytics("Not able to set up tunnel")
                 self.share_url = None
                 self.share = False
-                print(strings.en["COULD_NOT_GET_SHARE_LINK"])
+                if Path(BINARY_PATH).exists():
+                    print(strings.en["COULD_NOT_GET_SHARE_LINK"])
+                else:
+                    print(
+                        strings.en["COULD_NOT_GET_SHARE_LINK_MISSING_FILE"].format(
+                            BINARY_PATH,
+                            BINARY_URL,
+                            BINARY_FILENAME,
+                            BINARY_FOLDER,
+                        )
+                    )
         else:
             if not (quiet):
                 print(strings.en["PUBLIC_SHARE_TRUE"])
@@ -1811,13 +1960,8 @@ Received outputs:
 
         # Check if running in a Python notebook in which case, display inline
         if inline is None:
-            inline = utils.ipython_check() and (self.auth is None)
+            inline = utils.ipython_check()
         if inline:
-            if self.auth is not None:
-                print(
-                    "Warning: authentication is not supported inline. Please"
-                    "click the link to access the interface in a new tab."
-                )
             try:
                 from IPython.display import HTML, Javascript, display  # type: ignore
 
@@ -1883,11 +2027,10 @@ Received outputs:
                 "show_tips": self.show_tips,
                 "server_name": server_name,
                 "server_port": server_port,
-                "is_spaces": self.is_space,
+                "is_space": self.space_id is not None,
                 "mode": self.mode,
             }
-            utils.launch_analytics(data)
-            utils.launched_telemetry(self, data)
+            analytics.launched_analytics(self, data)
 
         utils.show_tip(self)
 
@@ -1920,10 +2063,10 @@ Received outputs:
             analytics_integration = "CometML"
             comet_ml.log_other("Created from", "Gradio")
             if self.share_url is not None:
-                comet_ml.log_text("gradio: " + self.share_url)
+                comet_ml.log_text(f"gradio: {self.share_url}")
                 comet_ml.end()
             elif self.local_url:
-                comet_ml.log_text("gradio: " + self.local_url)
+                comet_ml.log_text(f"gradio: {self.local_url}")
                 comet_ml.end()
             else:
                 raise ValueError("Please run `launch()` first.")
@@ -1956,7 +2099,7 @@ Received outputs:
                 mlflow.log_param("Gradio Interface Local Link", self.local_url)
         if self.analytics_enabled and analytics_integration:
             data = {"integration": analytics_integration}
-            utils.integration_analytics(data)
+            analytics.integration_analytics(data)
 
     def close(self, verbose: bool = True) -> None:
         """
@@ -1965,13 +2108,14 @@ Received outputs:
         try:
             if self.enable_queue:
                 self._queue.close()
-            self.server.close()
+            if self.server:
+                self.server.close()
             self.is_running = False
             # So that the startup events (starting the queue)
             # happen the next time the app is launched
             self.app.startup_events_triggered = False
             if verbose:
-                print("Closing server running on port: {}".format(self.server_port))
+                print(f"Closing server running on port: {self.server_port}")
         except (AttributeError, OSError):  # can't close if not running
             pass
 
@@ -1984,7 +2128,8 @@ Received outputs:
                 time.sleep(0.1)
         except (KeyboardInterrupt, OSError):
             print("Keyboard interruption in main thread... closing server.")
-            self.server.close()
+            if self.server:
+                self.server.close()
             for tunnel in CURRENT_TUNNELS:
                 tunnel.kill()
 
@@ -2017,7 +2162,7 @@ Received outputs:
         """Events that should be run when the app containing this block starts up."""
 
         if self.enable_queue:
-            utils.run_coro_in_background(self._queue.start, (self.progress_tracking,))
+            utils.run_coro_in_background(self._queue.start, self.ssl_verify)
             # So that processing can resume in case the queue was stopped
             self._queue.stopped = False
         utils.run_coro_in_background(self.create_limiter)

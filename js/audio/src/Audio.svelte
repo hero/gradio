@@ -14,16 +14,18 @@
 	import { Music } from "@gradio/icons";
 	// @ts-ignore
 	import Range from "svelte-range-slider-pips";
+	import { loaded } from "./utils";
 
 	import type { IBlobEvent, IMediaRecorder } from "extendable-media-recorder";
 
 	export let value: null | { name: string; data: string } = null;
 	export let label: string;
-	export let show_label: boolean = true;
-	export let name: string = "";
+	export let show_label = true;
+	export let name = "";
 	export let source: "microphone" | "upload" | "none";
-	export let pending: boolean = false;
-	export let streaming: boolean = false;
+	export let pending = false;
+	export let streaming = false;
+	export let autoplay = false;
 
 	// TODO: make use of this
 	// export let type: "normal" | "numpy" = "normal";
@@ -32,22 +34,21 @@
 	let recorder: IMediaRecorder;
 	let mode = "";
 	let header: Uint8Array | undefined = undefined;
-	let pending_stream: Array<Uint8Array> = [];
-	let submit_pending_stream_on_pending_end: boolean = false;
-	let player;
+	let pending_stream: Uint8Array[] = [];
+	let submit_pending_stream_on_pending_end = false;
+	let player: HTMLAudioElement;
 	let inited = false;
-	let crop_values = [0, 100];
+	let crop_values: [number, number] = [0, 100];
 	const STREAM_TIMESLICE = 500;
 	const NUM_HEADER_BYTES = 44;
-	let audio_chunks: Array<Blob> = [];
-	let audio_blob;
+	let audio_chunks: Blob[] = [];
 	let module_promises:
 		| [
 				Promise<typeof import("extendable-media-recorder")>,
 				Promise<typeof import("extendable-media-recorder-wav-encoder")>
 		  ];
 
-	function get_modules() {
+	function get_modules(): void {
 		module_promises = [
 			import("extendable-media-recorder"),
 			import("extendable-media-recorder-wav-encoder")
@@ -59,16 +60,19 @@
 	}
 
 	const dispatch = createEventDispatcher<{
-		change: AudioData;
+		change: AudioData | null;
 		stream: AudioData;
-		edit: AudioData;
-		play: undefined;
-		pause: undefined;
-		ended: undefined;
+		edit: never;
+		play: never;
+		pause: never;
+		stop: never;
+		end: never;
 		drag: boolean;
 		error: string;
 		upload: FileData;
-		clear: undefined;
+		clear: never;
+		start_recording: never;
+		stop_recording: never;
 	}>();
 
 	function blob_to_data_url(blob: Blob): Promise<string> {
@@ -81,18 +85,18 @@
 	}
 
 	const dispatch_blob = async (
-		blobs: Array<Uint8Array> | Blob[],
-		event: "stream" | "change"
-	) => {
-		let audio_blob = new Blob(blobs, { type: "audio/wav" });
+		blobs: Uint8Array[] | Blob[],
+		event: "stream" | "change" | "stop_recording"
+	): Promise<void> => {
+		let _audio_blob = new Blob(blobs, { type: "audio/wav" });
 		value = {
-			data: await blob_to_data_url(audio_blob),
+			data: await blob_to_data_url(_audio_blob),
 			name: "audio.wav"
 		};
 		dispatch(event, value);
 	};
 
-	async function prepare_audio() {
+	async function prepare_audio(): Promise<void> {
 		let stream: MediaStream | null;
 
 		try {
@@ -104,9 +108,8 @@
 					"Please allow access to the microphone for recording."
 				);
 				return;
-			} else {
-				throw err;
 			}
+			throw err;
 		}
 
 		if (stream == null) return;
@@ -120,7 +123,7 @@
 
 			recorder = new MediaRecorder(stream, { mimeType: "audio/wav" });
 
-			async function handle_chunk(event: IBlobEvent) {
+			async function handle_chunk(event: IBlobEvent): Promise<void> {
 				let buffer = await event.data.arrayBuffer();
 				let payload = new Uint8Array(buffer);
 				if (!header) {
@@ -146,6 +149,7 @@
 			recorder.addEventListener("stop", async () => {
 				recording = false;
 				await dispatch_blob(audio_chunks, "change");
+				await dispatch_blob(audio_chunks, "stop_recording");
 				audio_chunks = [];
 			});
 		}
@@ -156,15 +160,15 @@
 	$: if (submit_pending_stream_on_pending_end && pending === false) {
 		submit_pending_stream_on_pending_end = false;
 		if (header && pending_stream) {
-			let blobParts: Array<Uint8Array> = [header].concat(pending_stream);
+			let blobParts: Uint8Array[] = [header].concat(pending_stream);
 			pending_stream = [];
 			dispatch_blob(blobParts, "stream");
 		}
 	}
 
-	async function record() {
+	async function record(): Promise<void> {
 		recording = true;
-
+		dispatch("start_recording");
 		if (!inited) await prepare_audio();
 		header = undefined;
 		if (streaming) {
@@ -180,7 +184,7 @@
 		}
 	});
 
-	const stop = async () => {
+	function stop(): void {
 		recorder.stop();
 		if (streaming) {
 			recording = false;
@@ -188,41 +192,20 @@
 				submit_pending_stream_on_pending_end = true;
 			}
 		}
-	};
+	}
 
-	function clear() {
-		dispatch("change");
+	function clear(): void {
+		dispatch("change", null);
 		dispatch("clear");
 		mode = "";
 		value = null;
-	}
-
-	function loaded(node: HTMLAudioElement) {
-		function clamp_playback() {
-			const start_time = (crop_values[0] / 100) * node.duration;
-			const end_time = (crop_values[1] / 100) * node.duration;
-			if (node.currentTime < start_time) {
-				node.currentTime = start_time;
-			}
-
-			if (node.currentTime > end_time) {
-				node.currentTime = start_time;
-				node.pause();
-			}
-		}
-
-		node.addEventListener("timeupdate", clamp_playback);
-
-		return {
-			destroy: () => node.removeEventListener("timeupdate", clamp_playback)
-		};
 	}
 
 	function handle_change({
 		detail: { values }
 	}: {
 		detail: { values: [number, number] };
-	}) {
+	}): void {
 		if (!value) return;
 
 		dispatch("change", {
@@ -238,11 +221,21 @@
 	function handle_load({
 		detail
 	}: {
-		detail: { data: string; name: string; size: number; is_example: boolean };
-	}) {
+		detail: {
+			data: string;
+			name: string;
+			size: number;
+			is_example: boolean;
+		};
+	}): void {
 		value = detail;
 		dispatch("change", { data: detail.data, name: detail.name });
 		dispatch("upload", detail);
+	}
+
+	function handle_ended(): void {
+		dispatch("stop");
+		dispatch("end");
 	}
 
 	export let dragging = false;
@@ -276,7 +269,12 @@
 			{/if}
 		</div>
 	{:else if source === "upload"}
-		<Upload filetype="audio/*" on:load={handle_load} bind:dragging>
+		<!-- explicitly listed out audio mimetypes due to iOS bug not recognizing audio/* -->
+		<Upload
+			filetype="audio/aac,audio/midi,audio/mpeg,audio/ogg,audio/wav,audio/x-wav,audio/opus,audio/webm,audio/flac,audio/vnd.rn-realaudio,audio/x-ms-wma,audio/x-aiff,audio/amr,audio/*"
+			on:load={handle_load}
+			bind:dragging
+		>
 			<slot />
 		</Upload>
 	{/if}
@@ -289,14 +287,15 @@
 	/>
 
 	<audio
-		use:loaded
+		use:loaded={{ autoplay, crop_values }}
 		controls
 		bind:this={player}
 		preload="metadata"
-		src={value.data}
+		src={value?.data}
 		on:play
 		on:pause
-		on:ended
+		on:ended={handle_ended}
+		data-testid={`${label}-audio`}
 	/>
 
 	{#if mode === "edit" && player?.duration}

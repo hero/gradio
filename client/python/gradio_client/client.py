@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
 import re
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -13,29 +15,38 @@ from concurrent.futures import Future, TimeoutError
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Literal
 
 import huggingface_hub
 import requests
 import websockets
-from huggingface_hub import SpaceStage
+from huggingface_hub import SpaceHardware, SpaceStage
 from huggingface_hub.utils import (
     RepositoryNotFoundError,
     build_hf_headers,
     send_telemetry,
 )
 from packaging import version
-from typing_extensions import Literal
 
 from gradio_client import serializing, utils
 from gradio_client.documentation import document, set_documentation_group
 from gradio_client.serializing import Serializable
-from gradio_client.utils import Communicator, JobStatus, Status, StatusUpdate
+from gradio_client.utils import (
+    Communicator,
+    JobStatus,
+    Status,
+    StatusUpdate,
+)
 
 set_documentation_group("py-client")
 
 
-@document("predict", "submit", "view_api")
+DEFAULT_TEMP_DIR = os.environ.get("GRADIO_TEMP_DIR") or str(
+    Path(tempfile.gettempdir()) / "gradio"
+)
+
+
+@document("predict", "submit", "view_api", "duplicate")
 class Client:
     """
     The main Client class for the Python client. This class is used to connect to a remote Gradio app and call its API endpoints.
@@ -51,7 +62,6 @@ class Client:
         job = client.submit("hello", api_name="/predict")  # runs the prediction in a background thread
         job.result()
         >> 49 # returns the result of the remote API call (blocking call)
-
     """
 
     def __init__(
@@ -60,6 +70,7 @@ class Client:
         hf_token: str | None = None,
         max_workers: int = 40,
         serialize: bool = True,
+        output_dir: str | Path | None = DEFAULT_TEMP_DIR,
         verbose: bool = True,
     ):
         """
@@ -68,6 +79,7 @@ class Client:
             hf_token: The Hugging Face token to use to access private Spaces. Automatically fetched if you are logged in via the Hugging Face Hub CLI. Obtain from: https://huggingface.co/settings/token
             max_workers: The maximum number of thread workers that can be used to make requests to the remote Gradio app simultaneously.
             serialize: Whether the client should serialize the inputs and deserialize the outputs of the remote API. If set to False, the client will pass the inputs and outputs as-is, without serializing/deserializing them. E.g. you if you set this to False, you'd submit an image in base64 format instead of a filepath, and you'd get back an image in base64 format from the remote API instead of a filepath.
+            output_dir: The directory to save files that are downloaded from the remote API. If None, reads from the GRADIO_TEMP_DIR environment variable. Defaults to a temporary directory on your machine.
             verbose: Whether the client should print statements to the console.
         """
         self.verbose = verbose
@@ -79,9 +91,10 @@ class Client:
             library_version=utils.__version__,
         )
         self.space_id = None
+        self.output_dir = output_dir
 
         if src.startswith("http://") or src.startswith("https://"):
-            _src = src
+            _src = src if src.endswith("/") else src + "/"
         else:
             _src = self._space_name_to_src(src)
             if _src is None:
@@ -132,8 +145,18 @@ class Client:
         to_id: str | None = None,
         hf_token: str | None = None,
         private: bool = True,
-        hardware: str | None = None,
-        secrets: Dict[str, str] | None = None,
+        hardware: Literal[
+            "cpu-basic",
+            "cpu-upgrade",
+            "t4-small",
+            "t4-medium",
+            "a10g-small",
+            "a10g-large",
+            "a100-large",
+        ]
+        | SpaceHardware
+        | None = None,
+        secrets: dict[str, str] | None = None,
         sleep_timeout: int = 5,
         max_workers: int = 40,
         verbose: bool = True,
@@ -160,13 +183,20 @@ class Client:
             sleep_timeout: The number of minutes after which the duplicate Space will be puased if no requests are made to it (to minimize billing charges). Defaults to 5 minutes.
             max_workers: The maximum number of thread workers that can be used to make requests to the remote Gradio app simultaneously.
             verbose: Whether the client should print statements to the console.
+        Example:
+            import os
+            from gradio_client import Client
+            HF_TOKEN = os.environ.get("HF_TOKEN")
+            client = Client.duplicate("abidlabs/whisper", hf_token=HF_TOKEN)
+            client.predict("audio_sample.wav")
+            >> "This is a test of the whisper speech recognition model."
         """
         try:
             original_info = huggingface_hub.get_space_runtime(from_id, token=hf_token)
-        except RepositoryNotFoundError:
+        except RepositoryNotFoundError as rnfe:
             raise ValueError(
                 f"Could not find Space: {from_id}. If it is a private Space, please provide an `hf_token`."
-            )
+            ) from rnfe
         if to_id:
             if "/" in to_id:
                 to_id = to_id.split("/")[1]
@@ -200,9 +230,6 @@ class Client:
                     huggingface_hub.add_space_secret(
                         space_id, key, value, token=hf_token
                     )
-            utils.set_space_timeout(
-                space_id, hf_token=hf_token, timeout_in_seconds=sleep_timeout * 60
-            )
             if verbose:
                 print(f"Created new Space: {utils.SPACE_URL.format(space_id)}")
         current_info = huggingface_hub.get_space_runtime(space_id, token=hf_token)
@@ -210,10 +237,16 @@ class Client:
             current_info.hardware or huggingface_hub.SpaceHardware.CPU_BASIC
         )
         hardware = hardware or original_info.hardware
-        if not current_hardware == hardware:
+        if current_hardware != hardware:
             huggingface_hub.request_space_hardware(space_id, hardware)  # type: ignore
             print(
                 f"-------\nNOTE: this Space uses upgraded hardware: {hardware}... see billing info at https://huggingface.co/settings/billing\n-------"
+            )
+        # Setting a timeout only works if the hardware is not basic
+        # so set it here after the hardware has been requested
+        if hardware != huggingface_hub.SpaceHardware.CPU_BASIC:
+            utils.set_space_timeout(
+                space_id, hf_token=hf_token, timeout_in_seconds=sleep_timeout * 60
             )
         if verbose:
             print("")
@@ -256,7 +289,7 @@ class Client:
         *args,
         api_name: str | None = None,
         fn_index: int | None = None,
-        result_callbacks: Callable | List[Callable] | None = None,
+        result_callbacks: Callable | list[Callable] | None = None,
     ) -> Job:
         """
         Creates and returns a Job object which calls the Gradio API in a background thread. The job can be used to retrieve the status and result of the remote API call.
@@ -284,7 +317,7 @@ class Client:
             helper = Communicator(
                 Lock(),
                 JobStatus(),
-                self.endpoints[inferred_fn_index].deserialize,
+                self.endpoints[inferred_fn_index].process_predictions,
                 self.reset_url,
             )
         end_to_end_fn = self.endpoints[inferred_fn_index].make_end_to_end_fn(helper)
@@ -317,12 +350,12 @@ class Client:
         all_endpoints: bool | None = None,
         print_info: bool = True,
         return_format: Literal["dict", "str"] | None = None,
-    ) -> Dict | str | None:
+    ) -> dict | str | None:
         """
         Prints the usage info for the API. If the Gradio app has multiple API endpoints, the usage info for each endpoint will be printed separately. If return_format="dict" the info is returned in dictionary format, as shown in the example below.
 
         Parameters:
-            all_endpoints: If True, prints information for both named and unnamed endpoints in the Gradio app. If False, will only print info about named endpoints. If None (default), will only print info about unnamed endpoints if there are no named endpoints.
+            all_endpoints: If True, prints information for both named and unnamed endpoints in the Gradio app. If False, will only print info about named endpoints. If None (default), will print info about named endpoints, unless there aren't any -- in which it will print info about unnamed endpoints.
             print_info: If True, prints the usage info to the console. If False, does not print the usage info.
             return_format: If None, nothing is returned. If "str", returns the same string that would be printed to the console. If "dict", returns the usage info as a dictionary that can be programmatically parsed, and *all endpoints are returned in the dictionary* regardless of the value of `all_endpoints`. The format of the dictionary is in the docstring of this method.
         Example:
@@ -391,25 +424,24 @@ class Client:
             api_info_url = urllib.parse.urljoin(self.src, utils.API_INFO_URL)
         else:
             api_info_url = urllib.parse.urljoin(self.src, utils.RAW_API_INFO_URL)
-        r = requests.get(api_info_url, headers=self.headers)
 
-        # Versions of Gradio older than 3.26 returned format of the API info
+        # Versions of Gradio older than 3.29.0 returned format of the API info
         # from the /info endpoint
-        if (
-            version.parse(self.config.get("version", "2.0")) >= version.Version("3.26")
-            and r.ok
-        ):
-            info = r.json()
+        if version.parse(self.config.get("version", "2.0")) > version.Version("3.29.0"):
+            r = requests.get(api_info_url, headers=self.headers)
+            if r.ok:
+                info = r.json()
+            else:
+                raise ValueError(f"Could not fetch api info for {self.src}")
         else:
             fetch = requests.post(
                 utils.SPACE_FETCHER_URL,
-                json={"serialize": self.serialize, "config": json.dumps(self.config)},
+                json={"config": json.dumps(self.config), "serialize": self.serialize},
             )
             if fetch.ok:
                 info = fetch.json()["api"]
             else:
                 raise ValueError(f"Could not fetch api info for {self.src}")
-
         num_named_endpoints = len(info["named_endpoints"])
         num_unnamed_endpoints = len(info["unnamed_endpoints"])
         if num_named_endpoints == 0 and all_endpoints is None:
@@ -424,10 +456,12 @@ class Client:
         if all_endpoints:
             human_info += f"\nUnnamed API endpoints: {num_unnamed_endpoints}\n"
             for fn_index, endpoint_info in info["unnamed_endpoints"].items():
-                human_info += self._render_endpoints_info(fn_index, endpoint_info)
+                # When loading from json, the fn_indices are read as strings
+                # because json keys can only be strings
+                human_info += self._render_endpoints_info(int(fn_index), endpoint_info)
         else:
             if num_unnamed_endpoints > 0:
-                human_info += f"\nUnnamed API endpoints: {num_unnamed_endpoints}, to view, run Client.view_api(`all_endpoints=True`)\n"
+                human_info += f"\nUnnamed API endpoints: {num_unnamed_endpoints}, to view, run Client.view_api(all_endpoints=True)\n"
 
         if print_info:
             print(human_info)
@@ -442,14 +476,14 @@ class Client:
     def _render_endpoints_info(
         self,
         name_or_index: str | int,
-        endpoints_info: Dict[str, List[Dict[str, str]]],
+        endpoints_info: dict[str, list[dict[str, Any]]],
     ) -> str:
-        parameter_names = list(p["label"] for p in endpoints_info["parameters"])
+        parameter_names = [p["label"] for p in endpoints_info["parameters"]]
         parameter_names = [utils.sanitize_parameter_names(p) for p in parameter_names]
         rendered_parameters = ", ".join(parameter_names)
         if rendered_parameters:
             rendered_parameters = rendered_parameters + ", "
-        return_values = list(p["label"] for p in endpoints_info["returns"])
+        return_values = [p["label"] for p in endpoints_info["returns"]]
         return_values = [utils.sanitize_parameter_names(r) for r in return_values]
         rendered_return_values = ", ".join(return_values)
         if len(return_values) > 1:
@@ -466,13 +500,25 @@ class Client:
         human_info += "    Parameters:\n"
         if endpoints_info["parameters"]:
             for info in endpoints_info["parameters"]:
-                human_info += f"     - [{info['component']}] {utils.sanitize_parameter_names(info['label'])}: {info['type_python']} ({info['type_description']})\n"
+                desc = (
+                    f" ({info['python_type']['description']})"
+                    if info["python_type"].get("description")
+                    else ""
+                )
+                type_ = info["python_type"]["type"]
+                human_info += f"     - [{info['component']}] {utils.sanitize_parameter_names(info['label'])}: {type_}{desc} \n"
         else:
             human_info += "     - None\n"
         human_info += "    Returns:\n"
         if endpoints_info["returns"]:
             for info in endpoints_info["returns"]:
-                human_info += f"     - [{info['component']}] {utils.sanitize_parameter_names(info['label'])}: {info['type_python']} ({info['type_description']})\n"
+                desc = (
+                    f" ({info['python_type']['description']})"
+                    if info["python_type"].get("description")
+                    else ""
+                )
+                type_ = info["python_type"]["type"]
+                human_info += f"     - [{info['component']}] {utils.sanitize_parameter_names(info['label'])}: {type_}{desc} \n"
         else:
             human_info += "     - None\n"
 
@@ -504,7 +550,7 @@ class Client:
         if api_name is not None:
             for i, d in enumerate(self.config["dependencies"]):
                 config_api_name = d.get("api_name")
-                if config_api_name is None:
+                if config_api_name is None or config_api_name is False:
                     continue
                 if "/" + config_api_name == api_name:
                     inferred_fn_index = i
@@ -535,7 +581,7 @@ class Client:
     def _space_name_to_src(self, space) -> str | None:
         return huggingface_hub.space_info(space, token=self.hf_token).host  # type: ignore
 
-    def _get_config(self) -> Dict:
+    def _get_config(self) -> dict:
         r = requests.get(
             urllib.parse.urljoin(self.src, utils.CONFIG_URL), headers=self.headers
         )
@@ -547,8 +593,10 @@ class Client:
             result = re.search(r"window.gradio_config = (.*?);[\s]*</script>", r.text)
             try:
                 config = json.loads(result.group(1))  # type: ignore
-            except AttributeError:
-                raise ValueError(f"Could not get Gradio config from: {self.src}")
+            except AttributeError as ae:
+                raise ValueError(
+                    f"Could not get Gradio config from: {self.src}"
+                ) from ae
             if "allow_flagging" in config:
                 raise ValueError(
                     "Gradio 2.x is not supported by this client. Please upgrade your Gradio app to Gradio 3.x or higher."
@@ -559,21 +607,23 @@ class Client:
 class Endpoint:
     """Helper class for storing all the information about a single API endpoint."""
 
-    def __init__(self, client: Client, fn_index: int, dependency: Dict):
+    def __init__(self, client: Client, fn_index: int, dependency: dict):
         self.client: Client = client
         self.fn_index = fn_index
         self.dependency = dependency
         api_name = dependency.get("api_name")
-        self.api_name: str | None = None if api_name is None else "/" + api_name
+        self.api_name: str | None = (
+            None if (api_name is None or api_name is False) else "/" + api_name
+        )
         self.use_ws = self._use_websocket(self.dependency)
         self.input_component_types = []
         self.output_component_types = []
         self.root_url = client.src + "/" if not client.src.endswith("/") else client.src
         try:
+            # Only a real API endpoint if backend_fn is True (so not just a frontend function), serializers are valid,
+            # and api_name is not False (meaning that the developer has explicitly disabled the API endpoint)
             self.serializers, self.deserializers = self._setup_serializers()
-            self.is_valid = self.dependency[
-                "backend_fn"
-            ]  # Only a real API endpoint if backend_fn is True and serializers are valid
+            self.is_valid = self.dependency["backend_fn"] and self.api_name is not False
         except AssertionError:
             self.is_valid = False
 
@@ -584,17 +634,16 @@ class Endpoint:
         return self.__repr__()
 
     def make_end_to_end_fn(self, helper: Communicator | None = None):
-
         _predict = self.make_predict(helper)
 
         def _inner(*data):
             if not self.is_valid:
                 raise utils.InvalidAPIEndpointError()
+            data = self.insert_state(*data)
             if self.client.serialize:
                 data = self.serialize(*data)
             predictions = _predict(*data)
-            if self.client.serialize:
-                predictions = self.deserialize(*predictions)
+            predictions = self.process_predictions(*predictions)
             # Append final output only if not already present
             # for consistency between generators and not generators
             if helper:
@@ -606,7 +655,7 @@ class Endpoint:
         return _inner
 
     def make_predict(self, helper: Communicator | None = None):
-        def _predict(*data) -> Tuple:
+        def _predict(*data) -> tuple:
             data = json.dumps(
                 {
                     "data": data,
@@ -632,20 +681,22 @@ class Endpoint:
                 result = json.loads(response.content.decode("utf-8"))
             try:
                 output = result["data"]
-            except KeyError:
+            except KeyError as ke:
                 is_public_space = (
                     self.client.space_id
                     and not huggingface_hub.space_info(self.client.space_id).private
                 )
                 if "error" in result and "429" in result["error"] and is_public_space:
                     raise utils.TooManyRequestsError(
-                        f"Too many requests to the API, please try again later. To avoid being rate-limited, please duplicate the Space using Client.duplicate({self.client.space_id}) and pass in your Hugging Face token."
-                    )
+                        f"Too many requests to the API, please try again later. To avoid being rate-limited, "
+                        f"please duplicate the Space using Client.duplicate({self.client.space_id}) "
+                        f"and pass in your Hugging Face token."
+                    ) from None
                 elif "error" in result:
-                    raise ValueError(result["error"])
+                    raise ValueError(result["error"]) from None
                 raise KeyError(
                     f"Could not find 'data' key in response. Response received: {result}"
-                )
+                ) from ke
             return tuple(output)
 
         return _predict
@@ -658,8 +709,8 @@ class Endpoint:
         return outputs
 
     def _upload(
-        self, file_paths: List[str | List[str]]
-    ) -> List[str | List[str]] | List[Dict[str, Any] | List[Dict[str, Any]]]:
+        self, file_paths: list[str | list[str]]
+    ) -> list[str | list[str]] | list[dict[str, Any] | list[dict[str, Any]]]:
         if not file_paths:
             return []
         # Put all the filepaths in one file
@@ -672,7 +723,7 @@ class Endpoint:
             if not isinstance(fs, list):
                 fs = [fs]
             for f in fs:
-                files.append(("files", (Path(f).name, open(f, "rb"))))
+                files.append(("files", (Path(f).name, open(f, "rb"))))  # noqa: SIM115
                 indices.append(i)
         r = requests.post(
             self.client.upload_url, headers=self.client.headers, files=files
@@ -707,8 +758,8 @@ class Endpoint:
 
     def _add_uploaded_files_to_data(
         self,
-        files: List[str | List[str]] | List[Dict[str, Any] | List[Dict[str, Any]]],
-        data: List[Any],
+        files: list[str | list[str]] | list[dict[str, Any] | list[dict[str, Any]]],
+        data: list[Any],
     ) -> None:
         """Helper function to modify the input data with the uploaded files."""
         file_counter = 0
@@ -717,11 +768,37 @@ class Endpoint:
                 data[i] = files[file_counter]
                 file_counter += 1
 
-    def serialize(self, *data) -> Tuple:
+    def insert_state(self, *data) -> tuple:
         data = list(data)
         for i, input_component_type in enumerate(self.input_component_types):
             if input_component_type == utils.STATE_COMPONENT:
                 data.insert(i, None)
+        return tuple(data)
+
+    def remove_state(self, *data) -> tuple:
+        data = [
+            d
+            for d, oct in zip(data, self.output_component_types)
+            if oct != utils.STATE_COMPONENT
+        ]
+        return tuple(data)
+
+    def reduce_singleton_output(self, *data) -> Any:
+        if (
+            len(
+                [
+                    oct
+                    for oct in self.output_component_types
+                    if oct != utils.STATE_COMPONENT
+                ]
+            )
+            == 1
+        ):
+            return data[0]
+        else:
+            return data
+
+    def serialize(self, *data) -> tuple:
         assert len(data) == len(
             self.serializers
         ), f"Expected {len(self.serializers)} arguments, got {len(data)}"
@@ -732,40 +809,36 @@ class Endpoint:
             if t in ["file", "uploadbutton"]
         ]
         uploaded_files = self._upload(files)
+        data = list(data)
         self._add_uploaded_files_to_data(uploaded_files, data)
-
         o = tuple([s.serialize(d) for s, d in zip(self.serializers, data)])
         return o
 
-    def deserialize(self, *data) -> Tuple | Any:
+    def deserialize(self, *data) -> tuple:
         assert len(data) == len(
             self.deserializers
         ), f"Expected {len(self.deserializers)} outputs, got {len(data)}"
         outputs = tuple(
             [
-                s.deserialize(d, hf_token=self.client.hf_token, root_url=self.root_url)
-                for s, d, oct in zip(
-                    self.deserializers, data, self.output_component_types
+                s.deserialize(
+                    d,
+                    save_dir=self.client.output_dir,
+                    hf_token=self.client.hf_token,
+                    root_url=self.root_url,
                 )
-                if not oct == utils.STATE_COMPONENT
+                for s, d in zip(self.deserializers, data)
             ]
         )
-        if (
-            len(
-                [
-                    oct
-                    for oct in self.output_component_types
-                    if not oct == utils.STATE_COMPONENT
-                ]
-            )
-            == 1
-        ):
-            output = outputs[0]
-        else:
-            output = outputs
-        return output
+        return outputs
 
-    def _setup_serializers(self) -> Tuple[List[Serializable], List[Serializable]]:
+    def process_predictions(self, *predictions):
+        if self.client.serialize:
+            predictions = self.deserialize(*predictions)
+        predictions = self.remove_state(*predictions)
+        predictions = self.reduce_singleton_output(*predictions)
+        return predictions
+
+    def _setup_serializers(self) -> tuple[list[Serializable], list[Serializable]]:
         inputs = self.dependency["inputs"]
         serializers = []
 
@@ -809,7 +882,7 @@ class Endpoint:
 
         return serializers, deserializers
 
-    def _use_websocket(self, dependency: Dict) -> bool:
+    def _use_websocket(self, dependency: dict) -> bool:
         queue_enabled = self.client.config.get("enable_queue", False)
         queue_uses_websocket = version.parse(
             self.client.config.get("version", "2.0")
@@ -862,7 +935,7 @@ class Job(Future):
     def __iter__(self) -> Job:
         return self
 
-    def __next__(self) -> Tuple | Any:
+    def __next__(self) -> tuple | Any:
         if not self.communicator:
             raise StopIteration()
 
@@ -879,7 +952,7 @@ class Job(Future):
                 if self.communicator.job.latest_status.code == Status.FINISHED:
                     raise StopIteration()
 
-    def result(self, timeout=None) -> Any:
+    def result(self, timeout: float | None = None) -> Any:
         """
         Return the result of the call that the future represents. Raises CancelledError: If the future was cancelled, TimeoutError: If the future didn't finish executing before the given timeout, and Exception: If the call raised then that exception will be raised.
 
@@ -914,7 +987,7 @@ class Job(Future):
         else:
             return super().result(timeout=timeout)
 
-    def outputs(self) -> List[Tuple | Any]:
+    def outputs(self) -> list[tuple | Any]:
         """
         Returns a list containing the latest outputs from the Job.
 
@@ -943,7 +1016,11 @@ class Job(Future):
     def status(self) -> StatusUpdate:
         """
         Returns the latest status update from the Job in the form of a StatusUpdate
-        object, which contains the following fields: code, rank, queue_size, success, time, eta.
+        object, which contains the following fields: code, rank, queue_size, success, time, eta, and progress_data.
+
+        progress_data is a list of updates emitted by the gr.Progress() tracker of the event handler. Each element
+        of the list has the following fields: index, length, unit, progress, desc. If the event handler does not have
+        a gr.Progress() tracker, the progress_data field will be None.
 
         Example:
             from gradio_client import Client
@@ -967,6 +1044,7 @@ class Job(Future):
                 success=False,
                 time=time,
                 eta=None,
+                progress_data=None,
             )
         if self.done():
             if not self.future._exception:  # type: ignore
@@ -977,6 +1055,7 @@ class Job(Future):
                     success=True,
                     time=time,
                     eta=None,
+                    progress_data=None,
                 )
             else:
                 return StatusUpdate(
@@ -986,6 +1065,7 @@ class Job(Future):
                     success=False,
                     time=time,
                     eta=None,
+                    progress_data=None,
                 )
         else:
             if not self.communicator:
@@ -996,6 +1076,7 @@ class Job(Future):
                     success=None,
                     time=time,
                     eta=None,
+                    progress_data=None,
                 )
             else:
                 with self.communicator.lock:

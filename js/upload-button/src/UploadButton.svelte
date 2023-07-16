@@ -1,17 +1,20 @@
 <script lang="ts">
 	import { Button } from "@gradio/button";
-	import type { Styles } from "@gradio/utils";
 	import { createEventDispatcher } from "svelte";
 	import type { FileData } from "@gradio/upload";
 
-	export let style: Styles = {};
-	export let elem_id: string = "";
-	export let elem_classes: Array<string> = [];
-	export let visible: boolean = true;
-	export let size: "sm" | "lg" = style.size || "lg";
+	export let elem_id = "";
+	export let elem_classes: string[] = [];
+	export let visible = true;
 	export let file_count: string;
-	export let file_types: Array<string> = ["file"];
+	export let file_types: string[] = [];
 	export let include_file_metadata = true;
+	export let size: "sm" | "lg" = "lg";
+	export let scale: number | null = null;
+	export let min_width: number | undefined = undefined;
+	export let mode: "static" | "dynamic" = "dynamic";
+	export let variant: "primary" | "secondary" | "stop" = "secondary";
+	export let label: string;
 
 	let hidden_upload: HTMLInputElement;
 	const dispatch = createEventDispatcher();
@@ -22,9 +25,8 @@
 		file_types = file_types.map((x) => {
 			if (x.startsWith(".")) {
 				return x;
-			} else {
-				return x + "/*";
 			}
+			return x + "/*";
 		});
 		accept_file_types = file_types.join(", ");
 	}
@@ -34,14 +36,14 @@
 	};
 
 	const loadFiles = (files: FileList) => {
-		let _files: Array<File> = Array.from(files);
+		let _files: File[] = Array.from(files);
 		if (!files.length) {
 			return;
 		}
 		if (file_count === "single") {
 			_files = [files[0]];
 		}
-		var all_file_data: Array<FileData | File> = [];
+		var all_file_data: (FileData | File)[] = [];
 		_files.forEach((f, i) => {
 			all_file_data[i] = include_file_metadata
 				? {
@@ -64,9 +66,15 @@
 
 	const loadFilesFromUpload = (e: Event) => {
 		const target = e.target as HTMLInputElement;
-
-		if (!target.files) return;
+		if (!target.files) {
+			return;
+		}
 		loadFiles(target.files);
+	};
+
+	const clearInputValue = (e: Event) => {
+		const target = e.target as HTMLInputElement;
+		if (target.value) target.value = "";
 	};
 </script>
 
@@ -76,19 +84,23 @@
 	type="file"
 	bind:this={hidden_upload}
 	on:change={loadFilesFromUpload}
+	on:click={clearInputValue}
 	multiple={file_count === "multiple" || undefined}
 	webkitdirectory={file_count === "directory" || undefined}
 	mozdirectory={file_count === "directory" || undefined}
+	data-testid="{label}-upload-button"
 />
 
 <Button
 	{size}
-	variant="secondary"
+	{variant}
 	{elem_id}
 	{elem_classes}
 	{visible}
 	on:click={openFileUpload}
-	{style}
+	{scale}
+	{min_width}
+	disabled={mode === "static"}
 >
 	<slot />
 </Button>

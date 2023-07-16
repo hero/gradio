@@ -1,5 +1,5 @@
 import type { ComponentType } from "svelte";
-import type { SvelteComponentDev } from "svelte/internal";
+import type { SvelteComponent } from "svelte";
 
 import type { component_map } from "./directory";
 
@@ -10,8 +10,8 @@ export interface ComponentMeta {
 	id: number;
 	has_modes: boolean;
 	props: Record<string, unknown>;
-	instance: SvelteComponentDev;
-	component: ComponentType<SvelteComponentDev>;
+	instance: SvelteComponent;
+	component: ComponentType<SvelteComponent>;
 	documentation?: Documentation;
 	children?: Array<ComponentMeta>;
 	value?: any;
@@ -30,7 +30,7 @@ export interface Dependency {
 	backend_fn: boolean;
 	js: string | null;
 	scroll_to_output: boolean;
-	show_progress: boolean;
+	show_progress: "full" | "minimal" | "hidden";
 	frontend_fn?: Function;
 	status?: string;
 	queue: boolean | null;
@@ -58,3 +58,5 @@ export interface LayoutNode {
 	id: number;
 	children: Array<LayoutNode>;
 }
+
+export type ThemeMode = "system" | "light" | "dark";

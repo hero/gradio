@@ -3,18 +3,20 @@
 	import { Block } from "@gradio/atoms";
 	import StatusTracker from "../StatusTracker/StatusTracker.svelte";
 	import type { LoadingStatus } from "../StatusTracker/types";
-	import type { Styles } from "@gradio/utils";
 
-	export let label: string = "Radio";
+	export let label = "Radio";
 	export let info: string | undefined = undefined;
-	export let elem_id: string = "";
-	export let elem_classes: Array<string> = [];
-	export let visible: boolean = true;
+	export let elem_id = "";
+	export let elem_classes: string[] = [];
+	export let visible = true;
 	export let value: string | null = null;
-	export let choices: Array<string> = [];
+	export let value_is_output = false;
+	export let choices: string[] = [];
 	export let mode: "static" | "dynamic";
 	export let show_label: boolean;
-	export let style: Styles = {};
+	export let container = false;
+	export let scale: number | null = null;
+	export let min_width: number | undefined = undefined;
 	export let loading_status: LoadingStatus;
 </script>
 
@@ -23,20 +25,23 @@
 	type="fieldset"
 	{elem_id}
 	{elem_classes}
-	disable={typeof style.container === "boolean" && !style.container}
+	{container}
+	{scale}
+	{min_width}
 >
 	<StatusTracker {...loading_status} />
 
 	<Radio
 		bind:value
+		bind:value_is_output
 		{label}
 		{info}
 		{elem_id}
 		{show_label}
 		{choices}
-		{style}
 		disabled={mode === "static"}
 		on:change
+		on:input
 		on:select
 	/>
 </Block>

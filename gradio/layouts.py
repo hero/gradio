@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import warnings
-from typing import Type
+from typing import TYPE_CHECKING, Literal
 
 from gradio_client.documentation import document, set_documentation_group
 
 from gradio.blocks import BlockContext
+from gradio.deprecation import warn_style_method_deprecation
 from gradio.events import Changeable, Selectable
+
+if TYPE_CHECKING:
+    from gradio.blocks import Block
 
 set_documentation_group("layout")
 
@@ -16,20 +19,21 @@ class Row(BlockContext):
     """
     Row is a layout element within Blocks that renders all children horizontally.
     Example:
-        with gradio.Blocks() as demo:
-            with gradio.Row():
-                gr.Image("lion.jpg")
-                gr.Image("tiger.jpg")
+        with gr.Blocks() as demo:
+            with gr.Row():
+                gr.Image("lion.jpg", scale=2)
+                gr.Image("tiger.jpg", scale=1)
         demo.launch()
-    Guides: controlling_layout
+    Guides: controlling-layout
     """
 
     def __init__(
         self,
         *,
-        variant: str = "default",
+        variant: Literal["default", "panel", "compact"] = "default",
         visible: bool = True,
         elem_id: str | None = None,
+        equal_height: bool = True,
         **kwargs,
     ):
         """
@@ -37,14 +41,21 @@ class Row(BlockContext):
             variant: row type, 'default' (no background), 'panel' (gray background color and rounded corners), or 'compact' (rounded corners and no internal gap).
             visible: If False, row will be hidden.
             elem_id: An optional string that is assigned as the id of this component in the HTML DOM. Can be used for targeting CSS styles.
+            equal_height: If True, makes every child element have equal height
         """
         self.variant = variant
+        self.equal_height = equal_height
         if variant == "compact":
             self.allow_expected_parents = False
         super().__init__(visible=visible, elem_id=elem_id, **kwargs)
 
     def get_config(self):
-        return {"type": "row", "variant": self.variant, **super().get_config()}
+        return {
+            "type": "row",
+            "variant": self.variant,
+            "equal_height": self.equal_height,
+            **super().get_config(),
+        }
 
     @staticmethod
     def update(
@@ -59,19 +70,16 @@ class Row(BlockContext):
         self,
         *,
         equal_height: bool | None = None,
-        mobile_collapse: bool | None = None,
         **kwargs,
     ):
         """
         Styles the Row.
         Parameters:
             equal_height: If True, makes every child element have equal height
-            mobile_collapse: DEPRECATED.
         """
+        warn_style_method_deprecation()
         if equal_height is not None:
-            self._style["equal_height"] = equal_height
-        if mobile_collapse is not None:
-            warnings.warn("mobile_collapse is no longer supported.")
+            self.equal_height = equal_height
         return self
 
 
@@ -81,15 +89,15 @@ class Column(BlockContext):
     Column is a layout element within Blocks that renders all children vertically. The widths of columns can be set through the `scale` and `min_width` parameters.
     If a certain scale results in a column narrower than min_width, the min_width parameter will win.
     Example:
-        with gradio.Blocks() as demo:
-            with gradio.Row():
-                with gradio.Column(scale=1):
+        with gr.Blocks() as demo:
+            with gr.Row():
+                with gr.Column(scale=1):
                     text1 = gr.Textbox()
                     text2 = gr.Textbox()
-                with gradio.Column(scale=4):
+                with gr.Column(scale=4):
                     btn1 = gr.Button("Button 1")
                     btn2 = gr.Button("Button 2")
-    Guides: controlling_layout
+    Guides: controlling-layout
     """
 
     def __init__(
@@ -97,7 +105,7 @@ class Column(BlockContext):
         *,
         scale: int = 1,
         min_width: int = 320,
-        variant: str = "default",
+        variant: Literal["default", "panel", "compact"] = "default",
         visible: bool = True,
         elem_id: str | None = None,
         **kwargs,
@@ -180,14 +188,14 @@ class Tab(BlockContext, Selectable):
     """
     Tab (or its alias TabItem) is a layout element. Components defined within the Tab will be visible when this tab is selected tab.
     Example:
-        with gradio.Blocks() as demo:
-            with gradio.Tab("Lion"):
+        with gr.Blocks() as demo:
+            with gr.Tab("Lion"):
                 gr.Image("lion.jpg")
                 gr.Button("New Lion")
-            with gradio.Tab("Tiger"):
+            with gr.Tab("Tiger"):
                 gr.Image("tiger.jpg")
                 gr.Button("New Tiger")
-    Guides: controlling_layout
+    Guides: controlling-layout
     """
 
     def __init__(
@@ -216,7 +224,7 @@ class Tab(BlockContext, Selectable):
             **super(BlockContext, self).get_config(),
         }
 
-    def get_expected_parent(self) -> Type[Tabs]:
+    def get_expected_parent(self) -> type[Tabs]:
         return Tabs
 
     def get_block_name(self):
@@ -226,12 +234,13 @@ class Tab(BlockContext, Selectable):
 TabItem = Tab
 
 
+@document()
 class Group(BlockContext):
     """
     Group is a layout element within Blocks which groups together children so that
     they do not have any padding or margin between them.
     Example:
-        with gradio.Group():
+        with gr.Group():
             gr.Textbox(label="First")
             gr.Textbox(label="Last")
     """
@@ -269,7 +278,7 @@ class Box(BlockContext):
     Box is a a layout element which places children in a box with rounded corners and
     some padding around them.
     Example:
-        with gradio.Box():
+        with gr.Box():
             gr.Textbox(label="First")
             gr.Textbox(label="Last")
     """
@@ -301,12 +310,35 @@ class Box(BlockContext):
         }
 
     def style(self, **kwargs):
+        warn_style_method_deprecation()
         return self
 
 
 class Form(BlockContext):
+    def __init__(self, *, scale: int = 0, min_width: int = 0, **kwargs):
+        """
+        Parameters:
+            scale: relative width compared to adjacent Columns. For example, if Column A has scale=2, and Column B has scale=1, A will be twice as wide as B.
+            min_width: minimum pixel width of Column, will wrap if not sufficient screen space to satisfy this value. If a certain scale value results in a column narrower than min_width, the min_width parameter will be respected first.
+        """
+        self.scale = scale
+        self.min_width = min_width
+        super().__init__(**kwargs)
+
+    def add_child(self, child: Block):
+        if isinstance(self.parent, Row):
+            scale = getattr(child, "scale", None)
+            self.scale += 1 if scale is None else scale
+            self.min_width += getattr(child, "min_width", 0) or 0
+        super().add_child(child)
+
     def get_config(self):
-        return {"type": "form", **super().get_config()}
+        return {
+            "type": "form",
+            "scale": self.scale,
+            "min_width": self.min_width,
+            **super().get_config(),
+        }
 
 
 @document()
@@ -314,7 +346,7 @@ class Accordion(BlockContext):
     """
     Accordion is a layout element which can be toggled to show/hide the contained content.
     Example:
-        with gradio.Accordion("See Details"):
+        with gr.Accordion("See Details"):
             gr.Markdown("lorem ipsum")
     """
 

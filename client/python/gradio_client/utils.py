@@ -6,15 +6,17 @@ import json
 import mimetypes
 import os
 import pkgutil
+import secrets
 import shutil
 import tempfile
+import warnings
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Optional
 
 import fsspec.asyn
 import httpx
@@ -23,14 +25,14 @@ import requests
 from huggingface_hub import SpaceStage
 from websockets.legacy.protocol import WebSocketCommonProtocol
 
-API_URL = "/api/predict/"
-WS_URL = "/queue/join"
-UPLOAD_URL = "/upload"
-CONFIG_URL = "/config"
-API_INFO_URL = "/info"
-RAW_API_INFO_URL = "/info?serialize=False"
-SPACE_FETCHER_URL = "https://gradio-space-api-fetcher.hf.space/api"
-RESET_URL = "/reset"
+API_URL = "api/predict/"
+WS_URL = "queue/join"
+UPLOAD_URL = "upload"
+CONFIG_URL = "config"
+API_INFO_URL = "info"
+RAW_API_INFO_URL = "info?serialize=False"
+SPACE_FETCHER_URL = "https://gradio-space-api-fetcher-v2.hf.space/api"
+RESET_URL = "reset"
 SPACE_URL = "https://hf.space/{}"
 
 STATE_COMPONENT = "state"
@@ -77,13 +79,14 @@ class Status(Enum):
     QUEUE_FULL = "QUEUE_FULL"
     IN_QUEUE = "IN_QUEUE"
     SENDING_DATA = "SENDING_DATA"
-    PROCESSING = "PROCESSSING"
+    PROCESSING = "PROCESSING"
     ITERATING = "ITERATING"
+    PROGRESS = "PROGRESS"
     FINISHED = "FINISHED"
     CANCELLED = "CANCELLED"
 
     @staticmethod
-    def ordering(status: "Status") -> int:
+    def ordering(status: Status) -> int:
         """Order of messages. Helpful for testing."""
         order = [
             Status.STARTING,
@@ -92,17 +95,18 @@ class Status(Enum):
             Status.IN_QUEUE,
             Status.SENDING_DATA,
             Status.PROCESSING,
+            Status.PROGRESS,
             Status.ITERATING,
             Status.FINISHED,
             Status.CANCELLED,
         ]
         return order.index(status)
 
-    def __lt__(self, other: "Status"):
+    def __lt__(self, other: Status):
         return self.ordering(self) < self.ordering(other)
 
     @staticmethod
-    def msg_to_status(msg: str) -> "Status":
+    def msg_to_status(msg: str) -> Status:
         """Map the raw message from the backend to the status code presented to users."""
         return {
             "send_hash": Status.JOINING_QUEUE,
@@ -112,7 +116,30 @@ class Status(Enum):
             "process_starts": Status.PROCESSING,
             "process_generating": Status.ITERATING,
             "process_completed": Status.FINISHED,
+            "progress": Status.PROGRESS,
         }[msg]
+
+
+@dataclass
+class ProgressUnit:
+    index: Optional[int]
+    length: Optional[int]
+    unit: Optional[str]
+    progress: Optional[float]
+    desc: Optional[str]
+
+    @classmethod
+    def from_ws_msg(cls, data: list[dict]) -> list[ProgressUnit]:
+        return [
+            cls(
+                index=d.get("index"),
+                length=d.get("length"),
+                unit=d.get("unit"),
+                progress=d.get("progress"),
+                desc=d.get("desc"),
+            )
+            for d in data
+        ]
 
 
 @dataclass
@@ -125,6 +152,7 @@ class StatusUpdate:
     eta: float | None
     success: bool | None
     time: datetime | None
+    progress_data: list[ProgressUnit] | None
 
 
 def create_initial_status_update():
@@ -135,6 +163,7 @@ def create_initial_status_update():
         eta=None,
         success=None,
         time=datetime.now(),
+        progress_data=None,
     )
 
 
@@ -142,11 +171,11 @@ def create_initial_status_update():
 class JobStatus:
     """The job status.
 
-    Keeps strack of the latest status update and intermediate outputs (not yet implements).
+    Keeps track of the latest status update and intermediate outputs (not yet implements).
     """
 
     latest_status: StatusUpdate = field(default_factory=create_initial_status_update)
-    outputs: List[Any] = field(default_factory=list)
+    outputs: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -155,7 +184,7 @@ class Communicator:
 
     lock: Lock
     job: JobStatus
-    deserialize: Callable[..., Tuple]
+    prediction_processor: Callable[..., tuple]
     reset_url: str
     should_cancel: bool = False
 
@@ -165,15 +194,37 @@ class Communicator:
 ########################
 
 
-def is_valid_url(possible_url: str) -> bool:
+def is_http_url_like(possible_url: str) -> bool:
+    """
+    Check if the given string looks like an HTTP(S) URL.
+    """
+    return possible_url.startswith(("http://", "https://"))
+
+
+def probe_url(possible_url: str) -> bool:
+    """
+    Probe the given URL to see if it responds with a 200 status code (to HEAD, then to GET).
+    """
     headers = {"User-Agent": "gradio (https://gradio.app/; team@gradio.app)"}
     try:
-        head_request = requests.head(possible_url, headers=headers)
-        if head_request.status_code == 405:
-            return requests.get(possible_url, headers=headers).ok
-        return head_request.ok
+        with requests.session() as sess:
+            head_request = sess.head(possible_url, headers=headers)
+            if head_request.status_code == 405:
+                return sess.get(possible_url, headers=headers).ok
+            return head_request.ok
     except Exception:
         return False
+
+
+def is_valid_url(possible_url: str) -> bool:
+    """
+    Check if the given string is a valid URL.
+    """
+    warnings.warn(
+        "is_valid_url should not be used. "
+        "Use is_http_url_like() and probe_url(), as suitable, instead.",
+    )
+    return is_http_url_like(possible_url) and probe_url(possible_url)
 
 
 async def get_pred_from_ws(
@@ -181,7 +232,7 @@ async def get_pred_from_ws(
     data: str,
     hash_data: str,
     helper: Communicator | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     completed = False
     resp = {}
     while not completed:
@@ -209,6 +260,7 @@ async def get_pred_from_ws(
         resp = json.loads(msg)
         if helper:
             with helper.lock:
+                has_progress = "progress_data" in resp
                 status_update = StatusUpdate(
                     code=Status.msg_to_status(resp["msg"]),
                     queue_size=resp.get("queue_size"),
@@ -216,11 +268,14 @@ async def get_pred_from_ws(
                     success=resp.get("success"),
                     time=datetime.now(),
                     eta=resp.get("rank_eta"),
+                    progress_data=ProgressUnit.from_ws_msg(resp["progress_data"])
+                    if has_progress
+                    else None,
                 )
                 output = resp.get("output", {}).get("data", [])
                 if output and status_update.code != Status.FINISHED:
                     try:
-                        result = helper.deserialize(*output)
+                        result = helper.prediction_processor(*output)
                     except Exception as e:
                         result = [e]
                     helper.job.outputs.append(result)
@@ -242,39 +297,27 @@ async def get_pred_from_ws(
 
 def download_tmp_copy_of_file(
     url_path: str, hf_token: str | None = None, dir: str | None = None
-) -> tempfile._TemporaryFileWrapper:
+) -> str:
     if dir is not None:
         os.makedirs(dir, exist_ok=True)
     headers = {"Authorization": "Bearer " + hf_token} if hf_token else {}
-    prefix = Path(url_path).stem
-    suffix = Path(url_path).suffix
-    file_obj = tempfile.NamedTemporaryFile(
-        delete=False,
-        prefix=prefix,
-        suffix=suffix,
-        dir=dir,
-    )
+    directory = Path(dir or tempfile.gettempdir()) / secrets.token_hex(20)
+    directory.mkdir(exist_ok=True, parents=True)
+    file_path = directory / Path(url_path).name
+
     with requests.get(url_path, headers=headers, stream=True) as r:
-        with open(file_obj.name, "wb") as f:
+        r.raise_for_status()
+        with open(file_path, "wb") as f:
             shutil.copyfileobj(r.raw, f)
-    return file_obj
+    return str(file_path.resolve())
 
 
-def create_tmp_copy_of_file(
-    file_path: str, dir: str | None = None
-) -> tempfile._TemporaryFileWrapper:
-    if dir is not None:
-        os.makedirs(dir, exist_ok=True)
-    prefix = Path(file_path).stem
-    suffix = Path(file_path).suffix
-    file_obj = tempfile.NamedTemporaryFile(
-        delete=False,
-        prefix=prefix,
-        suffix=suffix,
-        dir=dir,
-    )
-    shutil.copy2(file_path, file_obj.name)
-    return file_obj
+def create_tmp_copy_of_file(file_path: str, dir: str | None = None) -> str:
+    directory = Path(dir or tempfile.gettempdir()) / secrets.token_hex(20)
+    directory.mkdir(exist_ok=True, parents=True)
+    dest = directory / Path(file_path).name
+    shutil.copy2(file_path, dest)
+    return str(dest.resolve())
 
 
 def get_mimetype(filename: str) -> str | None:
@@ -313,7 +356,9 @@ def encode_file_to_base64(f: str | Path):
 
 
 def encode_url_to_base64(url: str):
-    encoded_string = base64.b64encode(requests.get(url).content)
+    resp = requests.get(url)
+    resp.raise_for_status()
+    encoded_string = base64.b64encode(resp.content)
     base64_str = str(encoded_string, "utf-8")
     mimetype = get_mimetype(url)
     return (
@@ -323,18 +368,14 @@ def encode_url_to_base64(url: str):
 
 def encode_url_or_file_to_base64(path: str | Path):
     path = str(path)
-    if is_valid_url(path):
+    if is_http_url_like(path):
         return encode_url_to_base64(path)
-    else:
-        return encode_file_to_base64(path)
+    return encode_file_to_base64(path)
 
 
-def decode_base64_to_binary(encoding: str) -> Tuple[bytes, str | None]:
+def decode_base64_to_binary(encoding: str) -> tuple[bytes, str | None]:
     extension = get_extension(encoding)
-    try:
-        data = encoding.split(",")[1]
-    except IndexError:
-        data = ""
+    data = encoding.rsplit(",", 1)[-1]
     return base64.b64decode(data), extension
 
 
@@ -351,10 +392,10 @@ def strip_invalid_filename_characters(filename: str, max_bytes: int = 200) -> st
     return filename
 
 
-def sanitize_parameter_names(original_param_name: str) -> str:
-    """Strips invalid characters from a parameter name and replaces spaces with underscores."""
+def sanitize_parameter_names(original_name: str) -> str:
+    """Cleans up a Python parameter name to make the API info more readable."""
     return (
-        "".join([char for char in original_param_name if char.isalnum() or char in " "])
+        "".join([char for char in original_name if char.isalnum() or char in " _"])
         .replace(" ", "_")
         .lower()
     )
@@ -366,8 +407,8 @@ def decode_base64_to_file(
     dir: str | Path | None = None,
     prefix: str | None = None,
 ):
-    if dir is not None:
-        os.makedirs(dir, exist_ok=True)
+    directory = Path(dir or tempfile.gettempdir()) / secrets.token_hex(20)
+    directory.mkdir(exist_ok=True, parents=True)
     data, extension = decode_base64_to_binary(encoding)
     if file_path is not None and prefix is None:
         filename = Path(file_path).name
@@ -380,20 +421,22 @@ def decode_base64_to_file(
         prefix = strip_invalid_filename_characters(prefix)
 
     if extension is None:
-        file_obj = tempfile.NamedTemporaryFile(delete=False, prefix=prefix, dir=dir)
+        file_obj = tempfile.NamedTemporaryFile(
+            delete=False, prefix=prefix, dir=directory
+        )
     else:
         file_obj = tempfile.NamedTemporaryFile(
             delete=False,
             prefix=prefix,
             suffix="." + extension,
-            dir=dir,
+            dir=directory,
         )
     file_obj.write(data)
     file_obj.flush()
     return file_obj
 
 
-def dict_or_str_to_json_file(jsn: str | Dict | List, dir: str | Path | None = None):
+def dict_or_str_to_json_file(jsn: str | dict | list, dir: str | Path | None = None):
     if dir is not None:
         os.makedirs(dir, exist_ok=True)
 
@@ -407,7 +450,7 @@ def dict_or_str_to_json_file(jsn: str | Dict | List, dir: str | Path | None = No
     return file_obj
 
 
-def file_to_json(file_path: str | Path) -> Dict | List:
+def file_to_json(file_path: str | Path) -> dict | list:
     with open(file_path) as f:
         return json.load(f)
 
@@ -425,18 +468,18 @@ def set_space_timeout(
         library_name="gradio_client",
         library_version=__version__,
     )
-    r = requests.post(
+    req = requests.post(
         f"https://huggingface.co/api/spaces/{space_id}/sleeptime",
         json={"seconds": timeout_in_seconds},
         headers=headers,
     )
     try:
-        huggingface_hub.utils.hf_raise_for_status(r)
-    except huggingface_hub.utils.HfHubHTTPError:
+        huggingface_hub.utils.hf_raise_for_status(req)
+    except huggingface_hub.utils.HfHubHTTPError as err:
         raise SpaceDuplicationError(
             f"Could not set sleep timeout on duplicated Space. Please visit {SPACE_URL.format(space_id)} "
             "to set a timeout manually to reduce billing charges."
-        )
+        ) from err
 
 
 ########################
@@ -458,3 +501,61 @@ def synchronize_async(func: Callable, *args, **kwargs) -> Any:
         **kwargs:
     """
     return fsspec.asyn.sync(fsspec.asyn.get_loop(), func, *args, **kwargs)  # type: ignore
+
+
+class APIInfoParseError(ValueError):
+    pass
+
+
+def get_type(schema: dict):
+    if "type" in schema:
+        return schema["type"]
+    elif schema.get("oneOf"):
+        return "oneOf"
+    elif schema.get("anyOf"):
+        return "anyOf"
+    else:
+        raise APIInfoParseError(f"Cannot parse type for {schema}")
+
+
+def json_schema_to_python_type(schema: Any) -> str:
+    """Convert the json schema into a python type hint"""
+    type_ = get_type(schema)
+    if type_ == {}:
+        if "json" in schema["description"]:
+            return "Dict[Any, Any]"
+        else:
+            return "Any"
+    elif type_ == "null":
+        return "None"
+    elif type_ == "integer":
+        return "int"
+    elif type_ == "string":
+        return "str"
+    elif type_ == "boolean":
+        return "bool"
+    elif type_ == "number":
+        return "int | float"
+    elif type_ == "array":
+        items = schema.get("items")
+        if "prefixItems" in items:
+            elements = ", ".join(
+                [json_schema_to_python_type(i) for i in items["prefixItems"]]
+            )
+            return f"Tuple[{elements}]"
+        else:
+            elements = json_schema_to_python_type(items)
+            return f"List[{elements}]"
+    elif type_ == "object":
+        des = ", ".join(
+            [
+                f"{n}: {json_schema_to_python_type(v)} ({v.get('description')})"
+                for n, v in schema["properties"].items()
+            ]
+        )
+        return f"Dict({des})"
+    elif type_ in ["oneOf", "anyOf"]:
+        desc = " | ".join([json_schema_to_python_type(i) for i in schema[type_]])
+        return desc
+    else:
+        raise APIInfoParseError(f"Cannot parse schema {schema}")

@@ -1,3 +1,4 @@
+import importlib.resources
 import json
 import tempfile
 from copy import deepcopy
@@ -5,9 +6,16 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from requests.exceptions import HTTPError
+import requests
 
 from gradio_client import media_data, utils
+
+types = json.loads(importlib.resources.read_text("gradio_client", "types.json"))
+types["MultipleFile"] = {
+    "type": "array",
+    "items": {"type": "string", "description": "filepath or URL to file"},
+}
+types["SingleFile"] = {"type": "string", "description": "filepath or URL to file"}
 
 
 def test_encode_url_or_file_to_base64():
@@ -32,9 +40,25 @@ def test_encode_url_to_base64():
     assert output_base64 == deepcopy(media_data.BASE64_IMAGE)
 
 
+def test_encode_url_to_base64_doesnt_encode_errors(monkeypatch):
+    error_response = requests.Response()
+    error_response.status_code = 404
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: error_response)
+    with pytest.raises(requests.RequestException):
+        utils.encode_url_to_base64("https://example.com/foo")
+
+
 def test_decode_base64_to_binary():
     binary = utils.decode_base64_to_binary(deepcopy(media_data.BASE64_IMAGE))
     assert deepcopy(media_data.BINARY_IMAGE) == binary
+
+    b64_img_without_header = deepcopy(media_data.BASE64_IMAGE).split(",")[1]
+    binary_without_header, extension = utils.decode_base64_to_binary(
+        b64_img_without_header
+    )
+
+    assert binary[0] == binary_without_header
+    assert extension is None
 
 
 def test_decode_base64_to_file():
@@ -46,7 +70,16 @@ def test_download_private_file():
     url_path = "https://gradio-tests-not-actually-private-space.hf.space/file=lion.jpg"
     hf_token = "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"  # Intentionally revealing this key for testing purposes
     file = utils.download_tmp_copy_of_file(url_path=url_path, hf_token=hf_token)
-    assert file.name.endswith(".jpg")
+    assert Path(file).name.endswith(".jpg")
+
+
+def test_download_tmp_copy_of_file_does_not_save_errors(monkeypatch):
+    error_response = requests.Response()
+    error_response.status_code = 404
+    error_response.close = lambda: 0  # Mock close method to avoid unrelated exception
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: error_response)
+    with pytest.raises(requests.RequestException):
+        utils.download_tmp_copy_of_file("https://example.com/foo")
 
 
 @pytest.mark.parametrize(
@@ -107,8 +140,41 @@ def test_sleep_successful(mock_post):
 
 @patch(
     "requests.post",
-    return_value=MagicMock(raise_for_status=MagicMock(side_effect=HTTPError)),
+    return_value=MagicMock(raise_for_status=MagicMock(side_effect=requests.HTTPError)),
 )
 def test_sleep_unsuccessful(mock_post):
     with pytest.raises(utils.SpaceDuplicationError):
         utils.set_space_timeout("gradio/calculator")
+
+
+@pytest.mark.parametrize("schema", types)
+def test_json_schema_to_python_type(schema):
+    if schema == "SimpleSerializable":
+        answer = "Any"
+    elif schema == "StringSerializable":
+        answer = "str"
+    elif schema == "ListStringSerializable":
+        answer = "List[str]"
+    elif schema == "BooleanSerializable":
+        answer = "bool"
+    elif schema == "NumberSerializable":
+        answer = "int | float"
+    elif schema == "ImgSerializable":
+        answer = "str"
+    elif schema == "FileSerializable":
+        answer = "str | Dict(name: str (name of file), data: str (base64 representation of file), size: int (size of image in bytes), is_file: bool (true if the file has been uploaded to the server), orig_name: str (original name of the file)) | List[str | Dict(name: str (name of file), data: str (base64 representation of file), size: int (size of image in bytes), is_file: bool (true if the file has been uploaded to the server), orig_name: str (original name of the file))]"
+    elif schema == "JSONSerializable":
+        answer = "Dict[Any, Any]"
+    elif schema == "GallerySerializable":
+        answer = "Tuple[Dict(name: str (name of file), data: str (base64 representation of file), size: int (size of image in bytes), is_file: bool (true if the file has been uploaded to the server), orig_name: str (original name of the file)), str | None]"
+    elif schema == "SingleFileSerializable":
+        answer = "str | Dict(name: str (name of file), data: str (base64 representation of file), size: int (size of image in bytes), is_file: bool (true if the file has been uploaded to the server), orig_name: str (original name of the file))"
+    elif schema == "MultipleFileSerializable":
+        answer = "List[str | Dict(name: str (name of file), data: str (base64 representation of file), size: int (size of image in bytes), is_file: bool (true if the file has been uploaded to the server), orig_name: str (original name of the file))]"
+    elif schema == "SingleFile":
+        answer = "str"
+    elif schema == "MultipleFile":
+        answer = "List[str]"
+    else:
+        raise ValueError(f"This test has not been modified to check {schema}")
+    assert utils.json_schema_to_python_type(types[schema]) == answer

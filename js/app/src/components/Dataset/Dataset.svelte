@@ -1,21 +1,23 @@
 <script lang="ts">
-	import { hover } from "@testing-library/user-event/dist/hover";
+	import { Block } from "@gradio/atoms";
 	import { createEventDispatcher } from "svelte";
-	import type { SvelteComponentDev, ComponentType } from "svelte/internal";
+	import type { SvelteComponent, ComponentType } from "svelte";
 	import { component_map } from "./directory";
 	import type { SelectData } from "@gradio/utils";
 
-	export let components: Array<keyof typeof component_map>;
-	export let label: string = "Examples";
-	export let headers: Array<string>;
-	export let samples: Array<Array<any>>;
-	export let elem_id: string = "";
-	export let elem_classes: Array<string> = [];
-	export let visible: boolean = true;
+	export let components: (keyof typeof component_map)[];
+	export let label = "Examples";
+	export let headers: string[];
+	export let samples: any[][];
+	export let elem_id = "";
+	export let elem_classes: string[] = [];
+	export let visible = true;
 	export let value: number | null = null;
 	export let root: string;
 	export let root_url: null | string;
-	export let samples_per_page: number = 10;
+	export let samples_per_page = 10;
+	export let scale: number | null = null;
+	export let min_width: number | undefined = undefined;
 
 	const dispatch = createEventDispatcher<{
 		click: number;
@@ -23,15 +25,15 @@
 	}>();
 
 	let samples_dir: string = root_url
-		? "proxy=" + root_url + "/file="
+		? "proxy=" + root_url + "file="
 		: root + "/file=";
 	let page = 0;
 	$: gallery = components.length < 2;
 	let paginate = samples.length > samples_per_page;
 
-	let selected_samples: Array<Array<any>>;
+	let selected_samples: any[][];
 	let page_count: number;
-	let visible_pages: Array<number> = [];
+	let visible_pages: number[] = [];
 
 	let current_hover = -1;
 
@@ -71,14 +73,21 @@
 	$: component_meta = selected_samples.map((sample_row) =>
 		sample_row.map((sample_cell, j) => ({
 			value: sample_cell,
-			component: component_map[
-				components[j]
-			] as ComponentType<SvelteComponentDev>
+			component: component_map[components[j]] as ComponentType<SvelteComponent>
 		}))
 	);
 </script>
 
-<div id={elem_id} class="wrap {elem_classes.join(' ')}" class:hide={!visible}>
+<Block
+	{visible}
+	padding={false}
+	{elem_id}
+	{elem_classes}
+	{scale}
+	{min_width}
+	allow_overflow={false}
+	container={false}
+>
 	<div class="label">
 		<svg
 			xmlns="http://www.w3.org/2000/svg"
@@ -147,8 +156,14 @@
 							on:mouseleave={() => handle_mouseleave()}
 						>
 							{#each sample_row as { value, component }, j}
-								{#if components[j] !== undefined && component_map[components[j]] !== undefined}
-									<td>
+								{@const component_name = components[j]}
+								{#if component_name !== undefined && component_map[component_name] !== undefined}
+									<td
+										style="max-width: {component_name === 'textbox'
+											? '35ch'
+											: 'auto'}"
+										class={component_name}
+									>
 										<svelte:component
 											this={component}
 											{value}
@@ -183,7 +198,7 @@
 			{/each}
 		</div>
 	{/if}
-</div>
+</Block>
 
 <style>
 	.wrap {

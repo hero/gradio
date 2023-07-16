@@ -9,7 +9,7 @@
   [![gradio-ui](https://github.com/gradio-app/gradio/actions/workflows/ui.yml/badge.svg)](https://github.com/gradio-app/gradio/actions/workflows/ui.yml)  
   [![PyPI](https://img.shields.io/pypi/v/gradio)](https://pypi.org/project/gradio/)
   [![PyPI downloads](https://img.shields.io/pypi/dm/gradio)](https://pypi.org/project/gradio/)
-  ![Python version](https://img.shields.io/badge/python-3.7+-important)
+  ![Python version](https://img.shields.io/badge/python-3.8+-important)
   [![Twitter follow](https://img.shields.io/twitter/follow/gradio?style=social&label=follow)](https://twitter.com/gradio)
 
   [Website](https://gradio.app)
@@ -39,7 +39,7 @@ Gradio is useful for:
 
 ## Quickstart
 
-**Prerequisite**: Gradio requires Python 3.7 or higher, that's all!
+**Prerequisite**: Gradio requires Python 3.8 or higher, that's all!
 
 ### What Does Gradio Do?
 
@@ -166,7 +166,7 @@ demo.launch()
 
 ![`sepia_filter` demo](demo/sepia_filter/screenshot.gif)
 
-When using the `Image` component as input, your function will receive a NumPy array with the shape `(width, height, 3)`, where the last dimension represents the RGB values. We'll return an image as well in the form of a NumPy array.
+When using the `Image` component as input, your function will receive a NumPy array with the shape `(height, width, 3)`, where the last dimension represents the RGB values. We'll return an image as well in the form of a NumPy array.
 
 You can also set the datatype used by the component with the `type=` keyword argument. For example, if you wanted your function to take a file path to an image instead of a NumPy array, the input `Image` component could be written as:
 
@@ -270,6 +270,9 @@ Gradio is built with many wonderful open-source libraries, please support them a
 [<img src="readme_files/vite.svg" alt="vite" height=40>](https://vitejs.dev)
 [<img src="readme_files/pnpm.svg" alt="pnpm" height=40>](https://pnpm.io)
 [<img src="readme_files/tailwind.svg" alt="tailwind" height=40>](https://tailwindcss.com)
+[<img src="readme_files/storybook.svg" alt="storybook" height=40>](https://storybook.js.org/)
+[<img src="readme_files/chromatic.svg" alt="chromatic" height=40>](https://www.chromatic.com/)
+
 
 ## License
 

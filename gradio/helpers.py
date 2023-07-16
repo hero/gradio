@@ -7,14 +7,14 @@ import ast
 import csv
 import inspect
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import PIL
@@ -22,7 +22,7 @@ import PIL.Image
 from gradio_client import utils as client_utils
 from gradio_client.documentation import document, set_documentation_group
 
-from gradio import processing_utils, routes, utils
+from gradio import components, processing_utils, routes, utils
 from gradio.context import Context
 from gradio.flagging import CSVLogger
 
@@ -37,9 +37,9 @@ set_documentation_group("helpers")
 
 
 def create_examples(
-    examples: List[Any] | List[List[Any]] | str,
-    inputs: IOComponent | List[IOComponent],
-    outputs: IOComponent | List[IOComponent] | None = None,
+    examples: list[Any] | list[list[Any]] | str,
+    inputs: IOComponent | list[IOComponent],
+    outputs: IOComponent | list[IOComponent] | None = None,
     fn: Callable | None = None,
     cache_examples: bool = False,
     examples_per_page: int = 10,
@@ -49,6 +49,7 @@ def create_examples(
     run_on_click: bool = False,
     preprocess: bool = True,
     postprocess: bool = True,
+    api_name: str | None | Literal[False] = False,
     batch: bool = False,
 ):
     """Top-level synchronous function that creates Examples. Provided for backwards compatibility, i.e. so that gr.Examples(...) can be used to create the Examples component."""
@@ -65,6 +66,7 @@ def create_examples(
         run_on_click=run_on_click,
         preprocess=preprocess,
         postprocess=postprocess,
+        api_name=api_name,
         batch=batch,
         _initiated_directly=False,
     )
@@ -81,14 +83,14 @@ class Examples:
     components. Optionally handles example caching for fast inference.
 
     Demos: blocks_inputs, fake_gan
-    Guides: more_on_examples_and_flagging, using_hugging_face_integrations, image_classification_in_pytorch, image_classification_in_tensorflow, image_classification_with_vision_transformers, create_your_own_friends_with_a_gan
+    Guides: more-on-examples-and-flagging, using-hugging-face-integrations, image-classification-in-pytorch, image-classification-in-tensorflow, image-classification-with-vision-transformers, create-your-own-friends-with-a-gan
     """
 
     def __init__(
         self,
-        examples: List[Any] | List[List[Any]] | str,
-        inputs: IOComponent | List[IOComponent],
-        outputs: IOComponent | List[IOComponent] | None = None,
+        examples: list[Any] | list[list[Any]] | str,
+        inputs: IOComponent | list[IOComponent],
+        outputs: IOComponent | list[IOComponent] | None = None,
         fn: Callable | None = None,
         cache_examples: bool = False,
         examples_per_page: int = 10,
@@ -98,6 +100,7 @@ class Examples:
         run_on_click: bool = False,
         preprocess: bool = True,
         postprocess: bool = True,
+        api_name: str | None | Literal[False] = False,
         batch: bool = False,
         _initiated_directly: bool = True,
     ):
@@ -107,13 +110,14 @@ class Examples:
             inputs: the component or list of components corresponding to the examples
             outputs: optionally, provide the component or list of components corresponding to the output of the examples. Required if `cache` is True.
             fn: optionally, provide the function to run to generate the outputs corresponding to the examples. Required if `cache` is True.
-            cache_examples: if True, caches examples for fast runtime. If True, then `fn` and `outputs` need to be provided
+            cache_examples: if True, caches examples for fast runtime. If True, then `fn` and `outputs` must be provided. If `fn` is a generator function, then the last yielded value will be used as the output.
             examples_per_page: how many examples to show per page.
             label: the label to use for the examples component (by default, "Examples")
             elem_id: an optional string that is assigned as the id of this component in the HTML DOM.
             run_on_click: if cache_examples is False, clicking on an example does not run the function when an example is clicked. Set this to True to run the function when an example is clicked. Has no effect if cache_examples is True.
             preprocess: if True, preprocesses the example input before running the prediction function and caching the output. Only applies if cache_examples is True.
             postprocess: if True, postprocesses the example output after running the prediction function and before caching. Only applies if cache_examples is True.
+            api_name: Defines how the event associated with clicking on the examples appears in the API docs. Can be a string, None, or False. If False (default), the endpoint will not be exposed in the api docs. If set to None, the endpoint will be exposed in the api docs as an unnamed endpoint, although this behavior will be changed in Gradio 4.0. If set to a string, the endpoint will be exposed in the api docs with the given name.
             batch: If True, then the function should process a batch of inputs, meaning that it should accept a list of input values for each parameter. Used only if cache_examples is True.
         """
         if _initiated_directly:
@@ -144,7 +148,7 @@ class Examples:
         elif isinstance(examples, str):
             if not Path(examples).exists():
                 raise FileNotFoundError(
-                    "Could not find examples directory: " + examples
+                    f"Could not find examples directory: {examples}"
                 )
             working_directory = examples
             if not (Path(examples) / LOG_FILE).exists():
@@ -196,6 +200,7 @@ class Examples:
         self._api_mode = _api_mode
         self.preprocess = preprocess
         self.postprocess = postprocess
+        self.api_name = api_name
         self.batch = batch
 
         with utils.set_directory(working_directory):
@@ -257,18 +262,19 @@ class Examples:
                 targets = self.inputs_with_examples + self.outputs
             else:
                 targets = self.inputs_with_examples
-            self.dataset.click(
+            load_input_event = self.dataset.click(
                 load_example,
                 inputs=[self.dataset],
                 outputs=targets,  # type: ignore
-                show_progress=False,
+                show_progress="hidden",
                 postprocess=False,
                 queue=False,
+                api_name=self.api_name,  # type: ignore
             )
             if self.run_on_click and not self.cache_examples:
                 if self.fn is None:
                     raise ValueError("Cannot run_on_click if no function is provided")
-                self.dataset.click(
+                load_input_event.then(
                     self.fn,
                     inputs=self.inputs,  # type: ignore
                     outputs=self.outputs,  # type: ignore
@@ -283,7 +289,7 @@ class Examples:
         """
         if Path(self.cached_file).exists():
             print(
-                f"Using cache from '{utils.abspath(self.cached_folder)}' directory. If method or examples have changed since last caching, delete this folder to clear cache."
+                f"Using cache from '{utils.abspath(self.cached_folder)}' directory. If method or examples have changed since last caching, delete this folder to clear cache.\n"
             )
         else:
             if Context.root_block is None:
@@ -292,10 +298,31 @@ class Examples:
             print(f"Caching examples at: '{utils.abspath(self.cached_folder)}'")
             cache_logger = CSVLogger()
 
+            if inspect.isgeneratorfunction(self.fn):
+
+                def get_final_item(args):  # type: ignore
+                    x = None
+                    for x in self.fn(args):  # noqa: B007  # type: ignore
+                        pass
+                    return x
+
+                fn = get_final_item
+            elif inspect.isasyncgenfunction(self.fn):
+
+                async def get_final_item(args):
+                    x = None
+                    async for x in self.fn(args):  # noqa: B007  # type: ignore
+                        pass
+                    return x
+
+                fn = get_final_item
+            else:
+                fn = self.fn
+
             # create a fake dependency to process the examples and get the predictions
             dependency, fn_index = Context.root_block.set_event_trigger(
                 event_name="fake_event",
-                fn=self.fn,
+                fn=fn,
                 inputs=self.inputs_with_examples,  # type: ignore
                 outputs=self.outputs,  # type: ignore
                 preprocess=self.preprocess and not self._api_mode,
@@ -306,12 +333,17 @@ class Examples:
             assert self.outputs is not None
             cache_logger.setup(self.outputs, self.cached_folder)
             for example_id, _ in enumerate(self.examples):
+                print(f"Caching example {example_id + 1}/{len(self.examples)}")
                 processed_input = self.processed_examples[example_id]
                 if self.batch:
                     processed_input = [[value] for value in processed_input]
-                prediction = await Context.root_block.process_api(
-                    fn_index=fn_index, inputs=processed_input, request=None, state={}
-                )
+                with utils.MatplotlibBackendMananger():
+                    prediction = await Context.root_block.process_api(
+                        fn_index=fn_index,
+                        inputs=processed_input,
+                        request=None,
+                        state={},
+                    )
                 output = prediction["data"]
                 if self.batch:
                     output = [value[0] for value in output]
@@ -319,8 +351,9 @@ class Examples:
             # Remove the "fake_event" to prevent bugs in loading interfaces from spaces
             Context.root_block.dependencies.remove(dependency)
             Context.root_block.fns.pop(fn_index)
+            print("Caching complete\n")
 
-    async def load_from_cache(self, example_id: int) -> List[Any]:
+    async def load_from_cache(self, example_id: int) -> list[Any]:
         """Loads a particular cached example for the interface.
         Parameters:
             example_id: The id of the example to process (zero-indexed).
@@ -331,12 +364,25 @@ class Examples:
         output = []
         assert self.outputs is not None
         for component, value in zip(self.outputs, example):
+            value_to_use = value
             try:
                 value_as_dict = ast.literal_eval(value)
+                # File components that output multiple files get saved as a python list
+                # need to pass the parsed list to serialize
+                # TODO: Better file serialization in 4.0
+                if isinstance(value_as_dict, list) and isinstance(
+                    component, components.File
+                ):
+                    value_to_use = value_as_dict
                 assert utils.is_update(value_as_dict)
                 output.append(value_as_dict)
             except (ValueError, TypeError, SyntaxError, AssertionError):
-                output.append(component.serialize(value, self.cached_folder))
+                output.append(
+                    component.serialize(
+                        value_to_use,
+                        self.cached_folder,
+                    )
+                )
         return output
 
 
@@ -393,7 +439,7 @@ class Progress(Iterable):
         self.track_tqdm = track_tqdm
         self._callback = _callback
         self._event_id = _event_id
-        self.iterables: List[TrackedIterable] = []
+        self.iterables: list[TrackedIterable] = []
 
     def __len__(self):
         return self.iterables[-1].length
@@ -422,13 +468,13 @@ class Progress(Iterable):
                 return next(current_iterable.iterable)  # type: ignore
             except StopIteration:
                 self.iterables.pop()
-                raise StopIteration
+                raise
         else:
             return self
 
     def __call__(
         self,
-        progress: float | Tuple[int, int | None] | None,
+        progress: float | tuple[int, int | None] | None,
         desc: str | None = None,
         total: int | None = None,
         unit: str = "steps",
@@ -463,8 +509,6 @@ class Progress(Iterable):
         total: int | None = None,
         unit: str = "steps",
         _tqdm=None,
-        *args,
-        **kwargs,
     ):
         """
         Attaches progress tracker to iterable, like tqdm.
@@ -521,7 +565,6 @@ class Progress(Iterable):
 
 
 def create_tracker(root_blocks, event_id, fn, track_tqdm):
-
     progress = Progress(_callback=root_blocks._queue.set_progress, _event_id=event_id)
     if not track_tqdm:
         return progress, fn
@@ -533,15 +576,17 @@ def create_tracker(root_blocks, event_id, fn, track_tqdm):
     if not hasattr(root_blocks, "_progress_tracker_per_thread"):
         root_blocks._progress_tracker_per_thread = {}
 
-    def init_tqdm(self, iterable=None, desc=None, *args, **kwargs):
+    def init_tqdm(
+        self, iterable=None, desc=None, total=None, unit="steps", *args, **kwargs
+    ):
         self._progress = root_blocks._progress_tracker_per_thread.get(
             threading.get_ident()
         )
         if self._progress is not None:
             self._progress.event_id = event_id
-            self._progress.tqdm(iterable, desc, _tqdm=self, *args, **kwargs)
-            kwargs["file"] = open(os.devnull, "w")
-        self.__init__orig__(iterable, desc, *args, **kwargs)
+            self._progress.tqdm(iterable, desc, total, unit, _tqdm=self)
+            kwargs["file"] = open(os.devnull, "w")  # noqa: SIM115
+        self.__init__orig__(iterable, desc, total, *args, unit=unit, **kwargs)
 
     def iter_tqdm(self):
         if self._progress is not None:
@@ -582,19 +627,22 @@ def create_tracker(root_blocks, event_id, fn, track_tqdm):
     if hasattr(_tqdm, "auto") and hasattr(_tqdm.auto, "tqdm"):
         _tqdm.auto.tqdm = _tqdm.tqdm
 
-    def tracked_fn(*args):
+    def before_fn():
         thread_id = threading.get_ident()
         root_blocks._progress_tracker_per_thread[thread_id] = progress
-        response = fn(*args)
+
+    def after_fn():
+        thread_id = threading.get_ident()
         del root_blocks._progress_tracker_per_thread[thread_id]
-        return response
+
+    tracked_fn = utils.function_wrapper(fn, before_fn=before_fn, after_fn=after_fn)
 
     return progress, tracked_fn
 
 
 def special_args(
     fn: Callable,
-    inputs: List[Any] | None = None,
+    inputs: list[Any] | None = None,
     request: routes.Request | None = None,
     event_data: EventData | None = None,
 ):
@@ -610,30 +658,35 @@ def special_args(
         updated inputs, progress index, event data index.
     """
     signature = inspect.signature(fn)
+    type_hints = utils.get_type_hints(fn)
     positional_args = []
-    for i, param in enumerate(signature.parameters.values()):
+    for param in signature.parameters.values():
         if param.kind not in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD):
             break
         positional_args.append(param)
     progress_index = None
     event_data_index = None
     for i, param in enumerate(positional_args):
+        type_hint = type_hints.get(param.name)
         if isinstance(param.default, Progress):
             progress_index = i
             if inputs is not None:
                 inputs.insert(i, param.default)
-        elif param.annotation == routes.Request:
+        elif type_hint == routes.Request:
             if inputs is not None:
                 inputs.insert(i, request)
-        elif isinstance(param.annotation, type) and issubclass(
-            param.annotation, EventData
+        elif (
+            type_hint
+            and inspect.isclass(type_hint)
+            and issubclass(type_hint, EventData)
         ):
             event_data_index = i
             if inputs is not None and event_data is not None:
-                inputs.insert(i, param.annotation(event_data.target, event_data._data))
-        elif param.default is not param.empty:
-            if inputs is not None and len(inputs) <= i:
-                inputs.insert(i, param.default)
+                inputs.insert(i, type_hint(event_data.target, event_data._data))
+        elif (
+            param.default is not param.empty and inputs is not None and len(inputs) <= i
+        ):
+            inputs.insert(i, param.default)
     if inputs is not None:
         while len(inputs) < len(positional_args):
             i = len(inputs)
@@ -695,15 +748,15 @@ def skip() -> dict:
 
 @document()
 def make_waveform(
-    audio: str | Tuple[int, np.ndarray],
+    audio: str | tuple[int, np.ndarray],
     *,
     bg_color: str = "#f3f4f6",
     bg_image: str | None = None,
     fg_alpha: float = 0.75,
-    bars_color: str | Tuple[str, str] = ("#fbbf24", "#ea580c"),
+    bars_color: str | tuple[str, str] = ("#fbbf24", "#ea580c"),
     bar_count: int = 50,
     bar_width: float = 0.6,
-):
+) -> str:
     """
     Generates a waveform video from an audio file. Useful for creating an easy to share audio visualization. The output should be passed into a `gr.Video` component.
     Parameters:
@@ -715,29 +768,37 @@ def make_waveform(
         bar_count: Number of bars in waveform
         bar_width: Width of bars in waveform. 1 represents full width, 0.5 represents half width, etc.
     Returns:
-        A filepath to the output video.
+        A filepath to the output video in mp4 format.
     """
     if isinstance(audio, str):
         audio_file = audio
         audio = processing_utils.audio_from_file(audio)
     else:
         tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        processing_utils.audio_to_file(audio[0], audio[1], tmp_wav.name)
+        processing_utils.audio_to_file(audio[0], audio[1], tmp_wav.name, format="wav")
         audio_file = tmp_wav.name
+
+    if not os.path.isfile(audio_file):
+        raise ValueError("Audio file not found.")
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found.")
+
     duration = round(len(audio[1]) / audio[0], 4)
 
     # Helper methods to create waveform
-    def hex_to_RGB(hex_str):
+    def hex_to_rgb(hex_str):
         return [int(hex_str[i : i + 2], 16) for i in range(1, 6, 2)]
 
     def get_color_gradient(c1, c2, n):
         assert n > 1
-        c1_rgb = np.array(hex_to_RGB(c1)) / 255
-        c2_rgb = np.array(hex_to_RGB(c2)) / 255
+        c1_rgb = np.array(hex_to_rgb(c1)) / 255
+        c2_rgb = np.array(hex_to_rgb(c2)) / 255
         mix_pcts = [x / (n - 1) for x in range(n)]
         rgb_colors = [((1 - mix) * c1_rgb + (mix * c2_rgb)) for mix in mix_pcts]
         return [
-            "#" + "".join([format(int(round(val * 255)), "02x") for val in item])
+            "#" + "".join(f"{int(round(val * 255)):02x}" for val in item)
             for item in rgb_colors
         ]
 
@@ -751,65 +812,81 @@ def make_waveform(
     samples = np.abs(samples)
     samples = np.max(samples, 1)
 
-    matplotlib.use("Agg")
-    plt.clf()
-    # Plot waveform
-    color = (
-        bars_color
-        if isinstance(bars_color, str)
-        else get_color_gradient(bars_color[0], bars_color[1], bar_count)
-    )
-    plt.bar(
-        np.arange(0, bar_count),
-        samples * 2,
-        bottom=(-1 * samples),
-        width=bar_width,
-        color=color,
-    )
-    plt.axis("off")
-    plt.margins(x=0)
-    tmp_img = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    savefig_kwargs: Dict[str, Any] = {"bbox_inches": "tight"}
-    if bg_image is not None:
-        savefig_kwargs["transparent"] = True
-    else:
-        savefig_kwargs["facecolor"] = bg_color
-    plt.savefig(tmp_img.name, **savefig_kwargs)
-    waveform_img = PIL.Image.open(tmp_img.name)
-    waveform_img = waveform_img.resize((1000, 200))
-
-    # Composite waveform with background image
-    if bg_image is not None:
-        waveform_array = np.array(waveform_img)
-        waveform_array[:, :, 3] = waveform_array[:, :, 3] * fg_alpha
-        waveform_img = PIL.Image.fromarray(waveform_array)
-
-        bg_img = PIL.Image.open(bg_image)
-        waveform_width, waveform_height = waveform_img.size
-        bg_width, bg_height = bg_img.size
-        if waveform_width != bg_width:
-            bg_img = bg_img.resize(
-                (waveform_width, 2 * int(bg_height * waveform_width / bg_width / 2))
-            )
-            bg_width, bg_height = bg_img.size
-        composite_height = max(bg_height, waveform_height)
-        composite = PIL.Image.new("RGBA", (waveform_width, composite_height), "#FFFFFF")
-        composite.paste(bg_img, (0, composite_height - bg_height))
-        composite.paste(
-            waveform_img, (0, composite_height - waveform_height), waveform_img
+    with utils.MatplotlibBackendMananger():
+        plt.clf()
+        # Plot waveform
+        color = (
+            bars_color
+            if isinstance(bars_color, str)
+            else get_color_gradient(bars_color[0], bars_color[1], bar_count)
         )
-        composite.save(tmp_img.name)
-        img_width, img_height = composite.size
-    else:
-        img_width, img_height = waveform_img.size
-        waveform_img.save(tmp_img.name)
+        plt.bar(
+            np.arange(0, bar_count),
+            samples * 2,
+            bottom=(-1 * samples),
+            width=bar_width,
+            color=color,
+        )
+        plt.axis("off")
+        plt.margins(x=0)
+        tmp_img = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        savefig_kwargs: dict[str, Any] = {"bbox_inches": "tight"}
+        if bg_image is not None:
+            savefig_kwargs["transparent"] = True
+        else:
+            savefig_kwargs["facecolor"] = bg_color
+        plt.savefig(tmp_img.name, **savefig_kwargs)
+        waveform_img = PIL.Image.open(tmp_img.name)
+        waveform_img = waveform_img.resize((1000, 200))
+
+        # Composite waveform with background image
+        if bg_image is not None:
+            waveform_array = np.array(waveform_img)
+            waveform_array[:, :, 3] = waveform_array[:, :, 3] * fg_alpha
+            waveform_img = PIL.Image.fromarray(waveform_array)
+
+            bg_img = PIL.Image.open(bg_image)
+            waveform_width, waveform_height = waveform_img.size
+            bg_width, bg_height = bg_img.size
+            if waveform_width != bg_width:
+                bg_img = bg_img.resize(
+                    (waveform_width, 2 * int(bg_height * waveform_width / bg_width / 2))
+                )
+                bg_width, bg_height = bg_img.size
+            composite_height = max(bg_height, waveform_height)
+            composite = PIL.Image.new(
+                "RGBA", (waveform_width, composite_height), "#FFFFFF"
+            )
+            composite.paste(bg_img, (0, composite_height - bg_height))
+            composite.paste(
+                waveform_img, (0, composite_height - waveform_height), waveform_img
+            )
+            composite.save(tmp_img.name)
+            img_width, img_height = composite.size
+        else:
+            img_width, img_height = waveform_img.size
+            waveform_img.save(tmp_img.name)
 
     # Convert waveform to video with ffmpeg
     output_mp4 = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
 
-    ffmpeg_cmd = f"""ffmpeg -loop 1 -i {tmp_img.name} -i {audio_file} -vf "color=c=#FFFFFF77:s={img_width}x{img_height}[bar];[0][bar]overlay=-w+(w/{duration})*t:H-h:shortest=1" -t {duration} -y {output_mp4.name}"""
+    ffmpeg_cmd = [
+        ffmpeg,
+        "-loop",
+        "1",
+        "-i",
+        tmp_img.name,
+        "-i",
+        audio_file,
+        "-vf",
+        f"color=c=#FFFFFF77:s={img_width}x{img_height}[bar];[0][bar]overlay=-w+(w/{duration})*t:H-h:shortest=1",
+        "-t",
+        str(duration),
+        "-y",
+        output_mp4.name,
+    ]
 
-    subprocess.call(ffmpeg_cmd, shell=True)
+    subprocess.check_call(ffmpeg_cmd)
     return output_mp4.name
 
 
@@ -842,3 +919,41 @@ class EventData:
         """
         self.target = target
         self._data = _data
+
+
+def log_message(message: str, level: Literal["info", "warning"] = "info"):
+    from gradio import context
+
+    if not hasattr(context.thread_data, "blocks"):  # Function called outside of Gradio
+        if level == "info":
+            print(message)
+        elif level == "warning":
+            warnings.warn(message)
+        return
+    if not context.thread_data.blocks.enable_queue:
+        warnings.warn(
+            f"Queueing must be enabled to issue {level.capitalize()}: '{message}'."
+        )
+        return
+    context.thread_data.blocks._queue.log_message(
+        event_id=context.thread_data.event_id, log=message, level=level
+    )
+
+
+@document()
+def Warning(message: str = "Warning issued."):  # noqa: N802
+    """
+    This function allows you to pass custom warning messages to the user. You can do so simply with `gr.Warning('message here')`, and when that line is executed the custom message will appear in a modal on the demo.
+    Parameters:
+        message: The warning message to be displayed to the user.
+    """
+    log_message(message, level="warning")
+
+
+@document()
+def Info(message: str = "Info issued."):  # noqa: N802
+    """
+    Parameters:
+        message: The info message to be displayed to the user.
+    """
+    log_message(message, level="info")

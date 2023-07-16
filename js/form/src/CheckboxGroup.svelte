@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { createEventDispatcher } from "svelte";
-	import { BlockTitle, Info } from "@gradio/atoms";
-	import { get_styles } from "@gradio/utils";
-	import type { Styles, SelectData } from "@gradio/utils";
+	import { createEventDispatcher, afterUpdate } from "svelte";
+	import { BlockTitle } from "@gradio/atoms";
+	import type { SelectData } from "@gradio/utils";
 
 	export let value: Array<string> = [];
-	export let style: Styles = {};
+	let old_value: Array<string> = value.slice();
+	export let value_is_output: boolean = false;
 	export let choices: Array<string>;
 	export let disabled: boolean = false;
 	export let label: string;
@@ -14,6 +14,7 @@
 
 	const dispatch = createEventDispatcher<{
 		change: Array<string>;
+		input: undefined;
 		select: SelectData;
 	}>();
 
@@ -23,22 +24,31 @@
 		} else {
 			value.push(choice);
 		}
-		dispatch("change", value);
 		value = value;
 	};
 
-	$: ({ item_container } = get_styles(style, ["item_container"]));
+	function handle_change() {
+		dispatch("change", value);
+		if (!value_is_output) {
+			dispatch("input");
+		}
+	}
+	afterUpdate(() => {
+		value_is_output = false;
+	});
+	$: {
+		if (JSON.stringify(value) !== JSON.stringify(old_value)) {
+			old_value = value.slice();
+			handle_change();
+		}
+	}
 </script>
 
 <BlockTitle {show_label} {info}>{label}</BlockTitle>
 
 <div class="wrap" data-testid="checkbox-group">
 	{#each choices as choice}
-		<label
-			class:disabled
-			class:selected={value.includes(choice)}
-			style={item_container}
-		>
+		<label class:disabled class:selected={value.includes(choice)}>
 			<input
 				{disabled}
 				on:change={() => toggleChoice(choice)}

@@ -1,36 +1,6 @@
-import { test, expect, Page } from "@playwright/test";
-import { mock_theme, wait_for_page } from "./utils";
-
-function mock_demo(page: Page, demo: string) {
-	return page.route("**/config", (route) => {
-		return route.fulfill({
-			headers: {
-				"Access-Control-Allow-Origin": "*"
-			},
-			path: `../../demo/${demo}/config.json`
-		});
-	});
-}
-
-function mock_api(page: Page, body: Array<unknown>) {
-	return page.route("**/run/predict", (route) => {
-		const id = JSON.parse(route.request().postData()!).fn_index;
-		return route.fulfill({
-			headers: {
-				"Access-Control-Allow-Origin": "*"
-			},
-			body: JSON.stringify({
-				data: body[id]
-			})
-		});
-	});
-}
+import { test, expect } from "@gradio/tootils";
 
 test("renders the correct elements", async ({ page }) => {
-	await mock_demo(page, "blocks_xray");
-	await mock_theme(page);
-	await wait_for_page(page);
-
 	const description = await page.getByTestId("markdown");
 	await expect(description).toContainText("Detect Disease From Scan");
 
@@ -42,25 +12,6 @@ test("renders the correct elements", async ({ page }) => {
 });
 
 test("can run an api request and display the data", async ({ page }) => {
-	await mock_demo(page, "blocks_xray");
-	await mock_api(page, [
-		[
-			{
-				Covid: 0.75,
-				"Lung Cancer": 0.25
-			}
-		],
-		[
-			{
-				Covid: 0.75,
-				"Lung Cancer": 0.25
-			}
-		]
-	]);
-
-	await mock_theme(page);
-	await wait_for_page(page);
-
 	await page.getByLabel("Covid").check();
 	await page.getByLabel("Lung Cancer").check();
 
@@ -72,5 +23,5 @@ test("can run an api request and display the data", async ({ page }) => {
 	]);
 
 	const json = await page.getByTestId("json").first();
-	await expect(json).toContainText(`Covid: 0.75, Lung Cancer: 0.25`);
+	await expect(json).toContainText(`Covid: 0.25, Lung Cancer: 0.5`);
 });

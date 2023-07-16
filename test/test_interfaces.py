@@ -10,13 +10,11 @@ import requests
 from fastapi.testclient import TestClient
 
 import gradio
-from gradio.blocks import Blocks
+from gradio.blocks import Blocks, get_api_info
 from gradio.components import Image, Textbox
 from gradio.interface import Interface, TabbedInterface, close_all, os
 from gradio.layouts import TabItem, Tabs
 from gradio.utils import assert_configs_are_equivalent_besides_ids
-
-os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
 
 
 @contextmanager
@@ -52,7 +50,7 @@ class TestInterface:
 
     def test_partial_functions(self):
         def greet(name, formatter):
-            return formatter("Hello " + name + "!")
+            return formatter(f"Hello {name}!")
 
         greet_upper_case = partial(greet, formatter=capwords)
         demo = Interface(fn=greet_upper_case, inputs="text", outputs="text")
@@ -82,7 +80,7 @@ class TestInterface:
         )
         interface = Interface(lambda x: 3 * x, "number", "number", examples=path)
         dataset_check = any(
-            [c["type"] == "dataset" for c in interface.get_config_file()["components"]]
+            c["type"] == "dataset" for c in interface.get_config_file()["components"]
         )
         assert dataset_check
 
@@ -95,7 +93,7 @@ class TestInterface:
                 interface.launch(prevent_thread_lock=False)
                 output = out.getvalue().strip()
                 assert (
-                    output == "Keyboard interruption in main thread... closing server."
+                    "Keyboard interruption in main thread... closing server." in output
                 )
 
     @mock.patch("gradio.utils.colab_check")
@@ -117,7 +115,9 @@ class TestInterface:
         interface.close()
 
     def test_interface_representation(self):
-        prediction_fn = lambda x: x
+        def prediction_fn(x):
+            return x
+
         prediction_fn.__name__ = "prediction_fn"
         repr = str(Interface(prediction_fn, "textbox", "label")).split("\n")
         assert prediction_fn.__name__ in repr[0]
@@ -157,6 +157,20 @@ class TestInterface:
         interface.launch(inline=True, prevent_thread_lock=True)
         assert mock_display.call_count == 2
         interface.close()
+
+    def test_setting_interactive_false(self):
+        output_textbox = Textbox()
+        Interface(lambda x: x, "textbox", output_textbox)
+        assert not output_textbox.get_config()["interactive"]
+        output_textbox = Textbox(interactive=True)
+        Interface(lambda x: x, "textbox", output_textbox)
+        assert output_textbox.get_config()["interactive"]
+
+    def test_get_api_info(self):
+        io = Interface(lambda x: x, Image(type="filepath"), "textbox")
+        api_info = get_api_info(io.get_config_file())
+        assert len(api_info["named_endpoints"]) == 1
+        assert len(api_info["unnamed_endpoints"]) == 0
 
 
 class TestTabbedInterface:

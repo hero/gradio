@@ -8,10 +8,9 @@ from __future__ import annotations
 import inspect
 import json
 import os
-import re
 import warnings
 import weakref
-from typing import TYPE_CHECKING, Any, Callable, List, Tuple
+from typing import TYPE_CHECKING, Any, Callable
 
 from gradio_client.documentation import document, set_documentation_group
 
@@ -19,6 +18,8 @@ from gradio import Examples, external, interpretation, utils
 from gradio.blocks import Blocks
 from gradio.components import (
     Button,
+    ClearButton,
+    DuplicateButton,
     Interpretation,
     IOComponent,
     Markdown,
@@ -26,7 +27,8 @@ from gradio.components import (
     get_component_instance,
 )
 from gradio.data_classes import InterfaceTypes
-from gradio.events import Changeable, Streamable
+from gradio.deprecation import warn_deprecation
+from gradio.events import Changeable, Streamable, Submittable
 from gradio.flagging import CSVLogger, FlaggingCallback, FlagMethod
 from gradio.layouts import Column, Row, Tab, Tabs
 from gradio.pipelines import load_from_pipeline
@@ -55,15 +57,15 @@ class Interface(Blocks):
 
         demo = gr.Interface(fn=image_classifier, inputs="image", outputs="label")
         demo.launch()
-    Demos: hello_world, hello_world_3, gpt_j
-    Guides: quickstart, key_features, sharing_your_app, interface_state, reactive_interfaces, advanced_interface_features, setting_up_a_gradio_demo_for_maximum_performance
+    Demos: hello_world, hello_world_3, gpt2_xl
+    Guides: quickstart, key-features, sharing-your-app, interface-state, reactive-interfaces, advanced-interface-features, setting-up-a-gradio-demo-for-maximum-performance
     """
 
     # stores references to all currently existing Interface instances
     instances: weakref.WeakSet = weakref.WeakSet()
 
     @classmethod
-    def get_instances(cls) -> List[Interface]:
+    def get_instances(cls) -> list[Interface]:
         """
         :return: list of all current instances.
         """
@@ -86,12 +88,14 @@ class Interface(Blocks):
         Parameters:
             name: the name of the model (e.g. "gpt2" or "facebook/bart-base") or space (e.g. "flax-community/spanish-gpt2"), can include the `src` as prefix (e.g. "models/facebook/bart-base")
             src: the source of the model: `models` or `spaces` (or leave empty if source is provided as a prefix in `name`)
-            api_key: optional access token for loading private Hugging Face Hub models or spaces. Find your token here: https://huggingface.co/settings/tokens
+            api_key: optional access token for loading private Hugging Face Hub models or spaces. Find your token here: https://huggingface.co/settings/tokens. Warning: only provide this if you are loading a trusted private Space as it can be read by the Space you are loading.
             alias: optional string used as the name of the loaded model instead of the default name (only applies if loading a Space running Gradio 2.x)
         Returns:
             a Gradio Interface object for the given model
         """
-        warnings.warn("gr.Intrerface.load() will be deprecated. Use gr.load() instead.")
+        warn_deprecation(
+            "gr.Interface.load() will be deprecated. Use gr.load() instead."
+        )
         return external.load(
             name=name, src=src, hf_token=api_key, alias=alias, **kwargs
         )
@@ -119,9 +123,9 @@ class Interface(Blocks):
     def __init__(
         self,
         fn: Callable,
-        inputs: str | IOComponent | List[str | IOComponent] | None,
-        outputs: str | IOComponent | List[str | IOComponent] | None,
-        examples: List[Any] | List[List[Any]] | str | None = None,
+        inputs: str | IOComponent | list[str | IOComponent] | None,
+        outputs: str | IOComponent | list[str | IOComponent] | None,
+        examples: list[Any] | list[list[Any]] | str | None = None,
         cache_examples: bool | None = None,
         examples_per_page: int = 10,
         live: bool = False,
@@ -134,13 +138,14 @@ class Interface(Blocks):
         theme: Theme | str | None = None,
         css: str | None = None,
         allow_flagging: str | None = None,
-        flagging_options: List[str] | List[Tuple[str, str]] | None = None,
+        flagging_options: list[str] | list[tuple[str, str]] | None = None,
         flagging_dir: str = "flagged",
         flagging_callback: FlaggingCallback = CSVLogger(),
         analytics_enabled: bool | None = None,
         batch: bool = False,
         max_batch_size: int = 4,
         _api_mode: bool = False,
+        allow_duplication: bool = False,
         **kwargs,
     ):
         """
@@ -149,7 +154,7 @@ class Interface(Blocks):
             inputs: a single Gradio component, or list of Gradio components. Components can either be passed as instantiated objects, or referred to by their string shortcuts. The number of input components should match the number of parameters in fn. If set to None, then only the output components will be displayed.
             outputs: a single Gradio component, or list of Gradio components. Components can either be passed as instantiated objects, or referred to by their string shortcuts. The number of output components should match the number of values returned by fn. If set to None, then only the input components will be displayed.
             examples: sample inputs for the function; if provided, appear below the UI components and can be clicked to populate the interface. Should be nested list, in which the outer list consists of samples and each inner list consists of an input corresponding to each input component. A string path to a directory of examples can also be provided, but it should be within the directory with the python file running the gradio app. If there are multiple input components and a directory is provided, a log.csv file must be present in the directory to link corresponding inputs.
-            cache_examples: If True, caches examples in the server for fast runtime in examples. The default option in HuggingFace Spaces is True. The default option elsewhere is False.
+            cache_examples: If True, caches examples in the server for fast runtime in examples. If `fn` is a generator function, then the last yielded value will be used as the output. The default option in HuggingFace Spaces is True. The default option elsewhere is False.
             examples_per_page: If examples are provided, how many to display per page.
             live: whether the interface should automatically rerun if any of the inputs change.
             interpretation: function that provides interpretation explaining prediction output. Pass "default" to use simple built-in interpreter, "shap" to use a built-in shapley-based interpreter, or your own custom interpretation function. For more information on the different interpretation methods, see the Advanced Interface Features guide.
@@ -167,6 +172,7 @@ class Interface(Blocks):
             analytics_enabled: Whether to allow basic telemetry. If None, will use GRADIO_ANALYTICS_ENABLED environment variable if defined, or default to True.
             batch: If True, then the function should process a batch of inputs, meaning that it should accept a list of input values for each parameter. The lists should be of equal length (and be up to length `max_batch_size`). The function is then *required* to return a tuple of lists (even if there is only 1 output component), with each list in the tuple corresponding to one output component.
             max_batch_size: Maximum number of inputs to batch together if this is called from the queue (only relevant if batch=True)
+            allow_duplication: If True, then will show a 'Duplicate Spaces' button on Hugging Face Spaces.
         """
         super().__init__(
             analytics_enabled=analytics_enabled,
@@ -202,7 +208,7 @@ class Interface(Blocks):
         if not isinstance(outputs, list):
             outputs = [outputs]
 
-        if self.is_space and cache_examples is None:
+        if self.space_id and cache_examples is None:
             self.cache_examples = True
         else:
             self.cache_examples = cache_examples or False
@@ -265,8 +271,10 @@ class Interface(Blocks):
         ]:
             for o in self.output_components:
                 assert isinstance(o, IOComponent)
-                o.interactive = False  # Force output components to be non-interactive
-
+                if o.interactive is None:
+                    # Unless explicitly otherwise specified, force output components to
+                    # be non-interactive
+                    o.interactive = False
         if (
             interpretation is None
             or isinstance(interpretation, list)
@@ -287,17 +295,11 @@ class Interface(Blocks):
         self.live = live
         self.title = title
 
-        CLEANER = re.compile("<.*?>")
-
-        def clean_html(raw_html):
-            cleantext = re.sub(CLEANER, "", raw_html)
-            return cleantext
-
         md = utils.get_markdown_parser()
-        simple_description = None
+        simple_description: str | None = None
         if description is not None:
             description = md.render(description)
-            simple_description = clean_html(description)
+            simple_description = utils.remove_html_tags(description)
         self.simple_description = simple_description
         self.description = description
         if article is not None:
@@ -349,9 +351,9 @@ class Interface(Blocks):
             raise ValueError(
                 "flagging_options must be a list of strings or list of (string, string) tuples."
             )
-        elif all([isinstance(x, str) for x in flagging_options]):
+        elif all(isinstance(x, str) for x in flagging_options):
             self.flagging_options = [(f"Flag as {x}", x) for x in flagging_options]
-        elif all([isinstance(x, tuple) for x in flagging_options]):
+        elif all(isinstance(x, tuple) for x in flagging_options):
             self.flagging_options = flagging_options
         else:
             raise ValueError(
@@ -362,14 +364,13 @@ class Interface(Blocks):
         self.flagging_dir = flagging_dir
         self.batch = batch
         self.max_batch_size = max_batch_size
+        self.allow_duplication = allow_duplication
 
-        self.save_to = None  # Used for selenium tests
         self.share = None
         self.share_url = None
         self.local_url = None
 
         self.favicon_path = None
-        utils.version_check()
         Interface.instances.add(self)
 
         param_names = inspect.getfullargspec(self.fn)[0]
@@ -385,7 +386,7 @@ class Interface(Blocks):
                 if len(self.output_components) == 1:
                     component.label = "output"
                 else:
-                    component.label = "output " + str(i)
+                    component.label = f"output {i}"
 
         if self.allow_flagging != "never":
             if (
@@ -404,11 +405,17 @@ class Interface(Blocks):
         with self:
             self.render_title_description()
 
-            submit_btn, clear_btn, stop_btn, flag_btns = None, None, None, None
+            submit_btn, clear_btn, stop_btn, flag_btns, duplicate_btn = (
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             interpretation_btn, interpretation_set = None, None
             input_component_column, interpret_component_column = None, None
 
-            with Row().style(equal_height=False):
+            with Row(equal_height=False):
                 if self.interface_type in [
                     InterfaceTypes.STANDARD,
                     InterfaceTypes.INPUT_ONLY,
@@ -430,6 +437,7 @@ class Interface(Blocks):
                     (
                         submit_btn_out,
                         clear_btn_2_out,
+                        duplicate_btn,
                         stop_btn_2_out,
                         flag_btns_out,
                         interpretation_btn,
@@ -445,6 +453,8 @@ class Interface(Blocks):
             self.attach_clear_events(
                 clear_btn, input_component_column, interpret_component_column
             )
+            if duplicate_btn is not None:
+                duplicate_btn.activate()
             self.attach_interpretation_events(
                 interpretation_btn,
                 interpretation_set,
@@ -461,26 +471,24 @@ class Interface(Blocks):
     def render_title_description(self) -> None:
         if self.title:
             Markdown(
-                "<h1 style='text-align: center; margin-bottom: 1rem'>"
-                + self.title
-                + "</h1>"
+                f"<h1 style='text-align: center; margin-bottom: 1rem'>{self.title}</h1>"
             )
         if self.description:
             Markdown(self.description)
 
-    def render_flag_btns(self) -> List[Button]:
+    def render_flag_btns(self) -> list[Button]:
         return [Button(label) for label, _ in self.flagging_options]
 
     def render_input_column(
         self,
-    ) -> Tuple[
+    ) -> tuple[
         Button | None,
+        ClearButton | None,
         Button | None,
-        Button | None,
-        List[Button] | None,
+        list[Button] | None,
         Column,
         Column | None,
-        List[Interpretation] | None,
+        list[Interpretation] | None,
     ]:
         submit_btn, clear_btn, stop_btn, flag_btns = None, None, None, None
         interpret_component_column, interpretation_set = None, None
@@ -501,7 +509,7 @@ class Interface(Blocks):
                     InterfaceTypes.STANDARD,
                     InterfaceTypes.INPUT_ONLY,
                 ]:
-                    clear_btn = Button("Clear")
+                    clear_btn = ClearButton()
                     if not self.live:
                         submit_btn = Button("Submit", variant="primary")
                         # Stopping jobs only works if the queue is enabled
@@ -509,12 +517,17 @@ class Interface(Blocks):
                         # is created. We use whether a generator function is provided
                         # as a proxy of whether the queue will be enabled.
                         # Using a generator function without the queue will raise an error.
-                        if inspect.isgeneratorfunction(self.fn):
+                        if inspect.isgeneratorfunction(
+                            self.fn
+                        ) or inspect.isasyncgenfunction(self.fn):
                             stop_btn = Button("Stop", variant="stop", visible=False)
                 elif self.interface_type == InterfaceTypes.UNIFIED:
-                    clear_btn = Button("Clear")
+                    clear_btn = ClearButton()
                     submit_btn = Button("Submit", variant="primary")
-                    if inspect.isgeneratorfunction(self.fn) and not self.live:
+                    if (
+                        inspect.isgeneratorfunction(self.fn)
+                        or inspect.isasyncgenfunction(self.fn)
+                    ) and not self.live:
                         stop_btn = Button("Stop", variant="stop")
                     if self.allow_flagging == "manual":
                         flag_btns = self.render_flag_btns()
@@ -533,9 +546,22 @@ class Interface(Blocks):
     def render_output_column(
         self,
         submit_btn_in: Button | None,
-    ) -> Tuple[Button | None, Button | None, Button | None, List | None, Button | None]:
+    ) -> tuple[
+        Button | None,
+        ClearButton | None,
+        DuplicateButton,
+        Button | None,
+        list | None,
+        Button | None,
+    ]:
         submit_btn = submit_btn_in
-        interpretation_btn, clear_btn, flag_btns, stop_btn = None, None, None, None
+        interpretation_btn, clear_btn, duplicate_btn, flag_btns, stop_btn = (
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
 
         with Column(variant="panel"):
             for component in self.output_components:
@@ -543,9 +569,12 @@ class Interface(Blocks):
                     component.render()
             with Row():
                 if self.interface_type == InterfaceTypes.OUTPUT_ONLY:
-                    clear_btn = Button("Clear")
+                    clear_btn = ClearButton()
                     submit_btn = Button("Generate", variant="primary")
-                    if inspect.isgeneratorfunction(self.fn) and not self.live:
+                    if (
+                        inspect.isgeneratorfunction(self.fn)
+                        or inspect.isasyncgenfunction(self.fn)
+                    ) and not self.live:
                         # Stopping jobs only works if the queue is enabled
                         # We don't know if the queue is enabled when the interface
                         # is created. We use whether a generator function is provided
@@ -557,10 +586,21 @@ class Interface(Blocks):
                 elif self.allow_flagging == "auto":
                     assert submit_btn is not None, "Submit button not rendered"
                     flag_btns = [submit_btn]
+
                 if self.interpretation:
                     interpretation_btn = Button("Interpret")
 
-        return submit_btn, clear_btn, stop_btn, flag_btns, interpretation_btn
+                if self.allow_duplication:
+                    duplicate_btn = DuplicateButton(scale=1, size="lg", _activate=False)
+
+        return (
+            submit_btn,
+            clear_btn,
+            duplicate_btn,
+            stop_btn,
+            flag_btns,
+            interpretation_btn,
+        )
 
     def render_article(self):
         if self.article:
@@ -608,82 +648,88 @@ class Interface(Blocks):
             assert submit_btn is not None, "Submit button not rendered"
             fn = self.fn
             extra_output = []
+
+            triggers = [submit_btn.click] + [
+                component.submit
+                for component in self.input_components
+                if isinstance(component, Submittable)
+            ]
+            predict_events = []
+
             if stop_btn:
-
-                # Wrap the original function to show/hide the "Stop" button
-                def fn(*args):
-                    # The main idea here is to call the original function
-                    # and append some updates to keep the "Submit" button
-                    # hidden and the "Stop" button visible
-                    # The 'finally' block hides the "Stop" button and
-                    # shows the "submit" button. Having a 'finally' block
-                    # will make sure the UI is "reset" even if there is an exception
-                    try:
-                        for output in self.fn(*args):
-                            if len(self.output_components) == 1 and not self.batch:
-                                output = [output]
-                            output = [o for o in output]
-                            yield output + [
-                                Button.update(visible=False),
-                                Button.update(visible=True),
-                            ]
-                    finally:
-                        yield [
-                            {"__type__": "generic_update"}
-                            for _ in self.output_components
-                        ] + [Button.update(visible=True), Button.update(visible=False)]
-
                 extra_output = [submit_btn, stop_btn]
-            pred = submit_btn.click(
-                fn,
-                self.input_components,
-                self.output_components + extra_output,
-                api_name="predict",
-                scroll_to_output=True,
-                preprocess=not (self.api_mode),
-                postprocess=not (self.api_mode),
-                batch=self.batch,
-                max_batch_size=self.max_batch_size,
-            )
-            if stop_btn:
-                submit_btn.click(
-                    lambda: (
-                        submit_btn.update(visible=False),
-                        stop_btn.update(visible=True),
-                    ),
-                    inputs=None,
-                    outputs=[submit_btn, stop_btn],
-                    queue=False,
-                )
+
+                def cleanup():
+                    return [Button.update(visible=True), Button.update(visible=False)]
+
+                for i, trigger in enumerate(triggers):
+                    predict_event = trigger(
+                        lambda: (
+                            submit_btn.update(visible=False),
+                            stop_btn.update(visible=True),
+                        ),
+                        inputs=None,
+                        outputs=[submit_btn, stop_btn],
+                        queue=False,
+                    ).then(
+                        self.fn,
+                        self.input_components,
+                        self.output_components,
+                        api_name="predict" if i == 0 else None,
+                        scroll_to_output=True,
+                        preprocess=not (self.api_mode),
+                        postprocess=not (self.api_mode),
+                        batch=self.batch,
+                        max_batch_size=self.max_batch_size,
+                    )
+                    predict_events.append(predict_event)
+
+                    predict_event.then(
+                        cleanup,
+                        inputs=None,
+                        outputs=extra_output,  # type: ignore
+                        queue=False,
+                    )
+
                 stop_btn.click(
-                    lambda: (
-                        submit_btn.update(visible=True),
-                        stop_btn.update(visible=False),
-                    ),
+                    cleanup,
                     inputs=None,
                     outputs=[submit_btn, stop_btn],
-                    cancels=[pred],
+                    cancels=predict_events,
                     queue=False,
                 )
+            else:
+                for i, trigger in enumerate(triggers):
+                    predict_events.append(
+                        trigger(
+                            fn,
+                            self.input_components,
+                            self.output_components,
+                            api_name="predict" if i == 0 else None,
+                            scroll_to_output=True,
+                            preprocess=not (self.api_mode),
+                            postprocess=not (self.api_mode),
+                            batch=self.batch,
+                            max_batch_size=self.max_batch_size,
+                        )
+                    )
 
     def attach_clear_events(
         self,
-        clear_btn: Button,
+        clear_btn: ClearButton,
         input_component_column: Column | None,
         interpret_component_column: Column | None,
     ):
+        clear_btn.add(self.input_components + self.output_components)
         clear_btn.click(
             None,
             [],
             (
-                self.input_components
-                + self.output_components
-                + ([input_component_column] if input_component_column else [])
+                ([input_component_column] if input_component_column else [])
                 + ([interpret_component_column] if self.interpretation else [])
             ),  # type: ignore
             _js=f"""() => {json.dumps(
-                [getattr(component, "cleared_value", None)
-                    for component in self.input_components + self.output_components] + (
+                (
                     [Column.update(visible=True)]
                     if self.interface_type
                         in [
@@ -701,7 +747,7 @@ class Interface(Blocks):
     def attach_interpretation_events(
         self,
         interpretation_btn: Button | None,
-        interpretation_set: List[Interpretation] | None,
+        interpretation_set: list[Interpretation] | None,
         input_component_column: Column | None,
         interpret_component_column: Column | None,
     ):
@@ -713,53 +759,60 @@ class Interface(Blocks):
                 preprocess=False,
             )
 
-    def attach_flagging_events(self, flag_btns: List[Button] | None, clear_btn: Button):
-        if flag_btns:
-            if self.interface_type in [
+    def attach_flagging_events(
+        self, flag_btns: list[Button] | None, clear_btn: ClearButton
+    ):
+        if not (
+            flag_btns
+            and self.interface_type
+            in (
                 InterfaceTypes.STANDARD,
                 InterfaceTypes.OUTPUT_ONLY,
                 InterfaceTypes.UNIFIED,
-            ]:
-                if self.allow_flagging == "auto":
-                    flag_method = FlagMethod(
-                        self.flagging_callback, "", "", visual_feedback=False
-                    )
-                    flag_btns[0].click(  # flag_btns[0] is just the "Submit" button
-                        flag_method,
-                        inputs=self.input_components,
-                        outputs=None,
-                        preprocess=False,
-                        queue=False,
-                    )
-                    return
+            )
+        ):
+            return
 
-                if self.interface_type == InterfaceTypes.UNIFIED:
-                    flag_components = self.input_components
-                else:
-                    flag_components = self.input_components + self.output_components
+        if self.allow_flagging == "auto":
+            flag_method = FlagMethod(
+                self.flagging_callback, "", "", visual_feedback=False
+            )
+            flag_btns[0].click(  # flag_btns[0] is just the "Submit" button
+                flag_method,
+                inputs=self.input_components,
+                outputs=None,
+                preprocess=False,
+                queue=False,
+            )
+            return
 
-                for flag_btn, (label, value) in zip(flag_btns, self.flagging_options):
-                    assert isinstance(value, str)
-                    flag_method = FlagMethod(self.flagging_callback, label, value)
-                    flag_btn.click(
-                        lambda: Button.update(value="Saving...", interactive=False),
-                        None,
-                        flag_btn,
-                        queue=False,
-                    )
-                    flag_btn.click(
-                        flag_method,
-                        inputs=flag_components,
-                        outputs=flag_btn,
-                        preprocess=False,
-                        queue=False,
-                    )
-                    clear_btn.click(
-                        flag_method.reset,
-                        None,
-                        flag_btn,
-                        queue=False,
-                    )
+        if self.interface_type == InterfaceTypes.UNIFIED:
+            flag_components = self.input_components
+        else:
+            flag_components = self.input_components + self.output_components
+
+        for flag_btn, (label, value) in zip(flag_btns, self.flagging_options):
+            assert isinstance(value, str)
+            flag_method = FlagMethod(self.flagging_callback, label, value)
+            flag_btn.click(
+                lambda: Button.update(value="Saving...", interactive=False),
+                None,
+                flag_btn,
+                queue=False,
+            )
+            flag_btn.click(
+                flag_method,
+                inputs=flag_components,
+                outputs=flag_btn,
+                preprocess=False,
+                queue=False,
+            )
+            clear_btn.click(
+                flag_method.reset,
+                None,
+                flag_btn,
+                queue=False,
+            )
 
     def render_examples(self):
         if self.examples:
@@ -785,13 +838,13 @@ class Interface(Blocks):
 
     def __repr__(self):
         repr = f"Gradio Interface for: {self.__name__}"
-        repr += "\n" + "-" * len(repr)
+        repr += f"\n{'-' * len(repr)}"
         repr += "\ninputs:"
         for component in self.input_components:
-            repr += "\n|-{}".format(str(component))
+            repr += f"\n|-{component}"
         repr += "\noutputs:"
         for component in self.output_components:
-            repr += "\n|-{}".format(str(component))
+            repr += f"\n|-{component}"
         return repr
 
     async def interpret_func(self, *args):
@@ -800,7 +853,7 @@ class Interface(Blocks):
             Column.update(visible=True),
         ]
 
-    async def interpret(self, raw_input: List[Any]) -> List[Any]:
+    async def interpret(self, raw_input: list[Any]) -> list[Any]:
         return [
             {"original": raw_value, "interpretation": interpretation}
             for interpretation, raw_value in zip(
@@ -812,7 +865,7 @@ class Interface(Blocks):
         """
         Deprecated.
         """
-        warnings.warn("The Interface.test_launch() function is deprecated.")
+        warn_deprecation("The Interface.test_launch() function is deprecated.")
 
 
 @document()
@@ -825,8 +878,8 @@ class TabbedInterface(Blocks):
 
     def __init__(
         self,
-        interface_list: List[Interface],
-        tab_names: List[str] | None = None,
+        interface_list: list[Interface],
+        tab_names: list[str] | None = None,
         title: str | None = None,
         theme: Theme | None = None,
         analytics_enabled: bool | None = None,
@@ -850,16 +903,14 @@ class TabbedInterface(Blocks):
             css=css,
         )
         if tab_names is None:
-            tab_names = ["Tab {}".format(i) for i in range(len(interface_list))]
+            tab_names = [f"Tab {i}" for i in range(len(interface_list))]
         with self:
             if title:
                 Markdown(
-                    "<h1 style='text-align: center; margin-bottom: 1rem'>"
-                    + title
-                    + "</h1>"
+                    f"<h1 style='text-align: center; margin-bottom: 1rem'>{title}</h1>"
                 )
             with Tabs():
-                for (interface, tab_name) in zip(interface_list, tab_names):
+                for interface, tab_name in zip(interface_list, tab_names):
                     with Tab(label=tab_name):
                         interface.render()
 

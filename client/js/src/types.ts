@@ -9,10 +9,11 @@ export interface Config {
 	layout: any;
 	mode: "blocks" | "interface";
 	root: string;
+	root_url?: string;
 	theme: string;
 	title: string;
 	version: string;
-	is_space: boolean;
+	space_id: string | null;
 	is_colab: boolean;
 	show_api: boolean;
 	stylesheets: string[];
@@ -22,6 +23,8 @@ export interface Config {
 export interface Payload {
 	data: Array<unknown>;
 	fn_index?: number;
+	event_data?: unknown;
+	time?: Date;
 }
 
 export interface PostResponse {
@@ -35,18 +38,27 @@ export interface UploadResponse {
 
 export interface Status {
 	queue: boolean;
-	status: "pending" | "error" | "complete" | "generating";
+	code?: string;
+	success?: boolean;
+	stage: "pending" | "error" | "complete" | "generating";
+	broken?: boolean;
 	size?: number;
 	position?: number;
 	eta?: number;
 	message?: string;
-	progress?: Array<{
+	progress_data?: Array<{
 		progress: number | null;
 		index: number | null;
 		length: number | null;
 		unit: string | null;
 		desc: string | null;
 	}>;
+	time?: Date;
+}
+
+export interface LogMessage {
+	log: string;
+	level: "warning" | "info";
 }
 
 export interface SpaceStatusNormal {
@@ -61,8 +73,13 @@ export interface SpaceStatusNormal {
 	message: string;
 }
 export interface SpaceStatusError {
-	status: "space_error";
-	detail: "NO_APP_FILE" | "CONFIG_ERROR" | "BUILD_ERROR" | "RUNTIME_ERROR";
+	status: "space_error" | "paused";
+	detail:
+		| "NO_APP_FILE"
+		| "CONFIG_ERROR"
+		| "BUILD_ERROR"
+		| "RUNTIME_ERROR"
+		| "PAUSED";
 	load_status: "error";
 	message: string;
 	discussions_enabled: boolean;
@@ -72,11 +89,12 @@ export type SpaceStatus = SpaceStatusNormal | SpaceStatusError;
 export type status_callback_function = (a: Status) => void;
 export type SpaceStatusCallback = (a: SpaceStatus) => void;
 
-export type EventType = "data" | "status";
+export type EventType = "data" | "status" | "log";
 
 export interface EventMap {
-	data: Record<string, any>;
+	data: Payload;
 	status: Status;
+	log: LogMessage;
 }
 
 export type Event<K extends EventType> = {
@@ -86,3 +104,13 @@ export type EventListener<K extends EventType> = (event: Event<K>) => void;
 export type ListenerMap<K extends EventType> = {
 	[P in K]?: EventListener<K>[];
 };
+export interface FileData {
+	name: string;
+	orig_name?: string;
+	size?: number;
+	data: string;
+	blob?: File;
+	is_file?: boolean;
+	mime_type?: string;
+	alt_text?: string;
+}

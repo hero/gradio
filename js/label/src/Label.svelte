@@ -3,21 +3,20 @@
 	import { createEventDispatcher } from "svelte";
 
 	export let value: {
-		label: string;
+		label?: string;
 		confidences?: Array<{ label: string; confidence: number }>;
 	};
 
 	const dispatch = createEventDispatcher<{ select: SelectData }>();
 
-	export let show_label: boolean = true;
 	export let color: string | undefined = undefined;
 	export let selectable: boolean = false;
 </script>
 
-<div>
+<div class="container">
 	<div
-		class:sr-only={!show_label}
 		class="output-class"
+		data-testid="label-output-value"
 		class:no-confidence={!("confidences" in value)}
 		style:background-color={color || "transparent"}
 	>
@@ -27,6 +26,7 @@
 		{#each value.confidences as confidence_set, i}
 			<div
 				class="confidence-set group"
+				data-testid={`${confidence_set.label}-confidence-set`}
 				class:selectable
 				on:click={() => {
 					dispatch("select", { index: i, value: confidence_set.label });
@@ -50,6 +50,9 @@
 </div>
 
 <style>
+	.container {
+		padding: var(--block-padding);
+	}
 	.output-class {
 		display: flex;
 		justify-content: center;

@@ -5,7 +5,7 @@ Contributed by the Comet team
 
 ## Introduction
 
-In this guide we will demonstrate some of the ways you can use Gradio with Comet. We will cover the basics of using Comet with Gradio and show you some of the ways that you can leverage Gradio's advanced features such as [Embedding with iFrames](https://www.gradio.app/sharing-your-app/#embedding-with-iframes) and [State](https://www.gradio.app/docs/#state) to build some amazing model evaluation workflows.
+In this guide we will demonstrate some of the ways you can use Gradio with Comet. We will cover the basics of using Comet with Gradio and show you some of the ways that you can leverage Gradio's advanced features such as [Embedding with iFrames](https://www.gradio.app/guides/sharing-your-app/#embedding-with-iframes) and [State](https://www.gradio.app/docs/#state) to build some amazing model evaluation workflows.
 
 Here is a list of the topics covered in this guide.
 
@@ -107,7 +107,7 @@ experiment.add_tag("image-classifier")
 io.integrate(comet_ml=experiment)
 ```
 
-The last line in this snippet will log the URL of the Gradio Appication to your Comet Experiment. You can find the URL in the Text Tab of your Experiment.
+The last line in this snippet will log the URL of the Gradio Application to your Comet Experiment. You can find the URL in the Text Tab of your Experiment.
 
 <video width="560" height="315" controls>
     <source src="https://user-images.githubusercontent.com/7529846/214328034-09369d4d-8b94-4c4a-aa3c-25e3ed8394c4.mp4"></source>

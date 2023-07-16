@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html
 	lang="en"
 	style="
@@ -35,12 +35,6 @@
 		<meta name="twitter:image" content="{{ config['thumbnail'] or '' }}" />
 
 		<script>
-			window.dataLayer = window.dataLayer || [];
-			function gtag() {
-				dataLayer.push(arguments);
-			}
-			gtag("js", new Date());
-			gtag("config", "UA-156449732-1");
 			window.__gradio_mode__ = "app";
 		</script>
 
@@ -52,7 +46,10 @@
 			href="https://fonts.gstatic.com"
 			crossorigin="anonymous"
 		/>
-		<script src="https://cdnjs.cloudflare.com/ajax/libs/iframe-resizer/4.3.1/iframeResizer.contentWindow.min.js"></script>
+		<script
+			src="https://cdnjs.cloudflare.com/ajax/libs/iframe-resizer/4.3.6/iframeResizer.contentWindow.min.js"
+			async
+		></script>
 	</head>
 
 	<body

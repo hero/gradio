@@ -69,6 +69,47 @@ class TestEvent:
         assert not parent.config["dependencies"][2]["trigger_only_on_success"]
         assert parent.config["dependencies"][3]["trigger_only_on_success"]
 
+    def test_load_chaining(self):
+        calls = 0
+
+        def increment():
+            nonlocal calls
+            calls += 1
+            return str(calls)
+
+        with gr.Blocks() as demo:
+            out = gr.Textbox(label="Call counter")
+            demo.load(increment, inputs=None, outputs=out).then(
+                increment, inputs=None, outputs=out
+            )
+
+        assert demo.config["dependencies"][0]["trigger"] == "load"
+        assert demo.config["dependencies"][0]["trigger_after"] is None
+        assert demo.config["dependencies"][1]["trigger"] == "then"
+        assert demo.config["dependencies"][1]["trigger_after"] == 0
+
+    def test_load_chaining_reuse(self):
+        calls = 0
+
+        def increment():
+            nonlocal calls
+            calls += 1
+            return str(calls)
+
+        with gr.Blocks() as demo:
+            out = gr.Textbox(label="Call counter")
+            demo.load(increment, inputs=None, outputs=out).then(
+                increment, inputs=None, outputs=out
+            )
+
+        with gr.Blocks() as demo2:
+            demo.render()
+
+        assert demo2.config["dependencies"][0]["trigger"] == "load"
+        assert demo2.config["dependencies"][0]["trigger_after"] is None
+        assert demo2.config["dependencies"][1]["trigger"] == "then"
+        assert demo2.config["dependencies"][1]["trigger_after"] == 0
+
 
 class TestEventErrors:
     def test_event_defined_invalid_scope(self):

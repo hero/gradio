@@ -219,9 +219,7 @@
 		canvas_observer.unobserve(canvas_container);
 	});
 
-	export function undo() {
-		const _lines = lines.slice(0, -1);
-
+	function redraw_image(_lines) {
 		clear_canvas();
 
 		if (value_img) {
@@ -243,13 +241,28 @@
 		draw_lines({ lines: _lines });
 		line_count = _lines.length;
 
-		if (lines.length) {
-			lines = _lines;
+		lines = _lines;
+		ctx.drawing.drawImage(canvas.temp, 0, 0, width, height);
+		if (mode === "mask") {
+			ctx.mask.drawImage(canvas.temp_fake, 0, 0, width, height);
 		}
 
 		if (lines.length == 0) {
 			dispatch("clear");
 		}
+	}
+
+	export function clear_mask() {
+		const _lines = [];
+
+		redraw_image(_lines);
+		trigger_on_change();
+	}
+
+	export function undo() {
+		const _lines = lines.slice(0, -1);
+
+		redraw_image(_lines);
 		trigger_on_change();
 	}
 
@@ -277,11 +290,8 @@
 					brush_radius
 				});
 			}
-
-			points = _points;
-
-			return;
 		});
+
 		saveLine({ brush_color, brush_radius });
 		if (mode === "mask") {
 			save_mask_line();

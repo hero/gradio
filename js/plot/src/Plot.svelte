@@ -1,3 +1,4 @@
+
 <script lang="ts">
 	//@ts-nocheck
 	import Plotly from "plotly.js-dist-min";
@@ -6,16 +7,18 @@
 	import { get_next_color } from "@gradio/utils";
 	import { Vega } from "svelte-vega";
 	import { afterUpdate, beforeUpdate, onDestroy } from "svelte";
-	import { create_config } from "./utils";
+	import { create_config, bar_plot_header_encoding} from "./utils";
 	import { Empty } from "@gradio/atoms";
+	import type { ThemeMode } from "js/app/src/components/types";
 
 	export let value;
 	export let target;
 	let spec = null;
 	export let colors: Array<string> = [];
-	export let theme: string;
+	export let theme_mode: ThemeMode;
 	export let caption: string;
 	export let bokeh_version: string  | null;
+	const divId = `bokehDiv-${Math.random().toString(5).substring(2)}`
 
 	function get_color(index: number) {
 		let current_color = colors[index % colors.length];
@@ -31,7 +34,7 @@
 		}
 	}
 
-	$: darkmode = theme == "dark";
+	$: darkmode = theme_mode == "dark";
 
 	$: plot = value?.plot;
 	$: type = value?.type;
@@ -43,8 +46,8 @@
 
 	function embed_bokeh(plot, type, bokeh_loaded){
 		if (document){
-			if (document.getElementById("bokehDiv")) {
-				document.getElementById("bokehDiv").innerHTML = "";
+			if (document.getElementById(divId)) {
+				document.getElementById(divId).innerHTML = "";
 			}
 		}
 		if (type == "bokeh" && window.Bokeh) {
@@ -53,7 +56,7 @@
 				bokeh_loaded = true;
 			}
 			let plotObj = JSON.parse(plot);
-			window.Bokeh.embed.embed_item(plotObj, "bokehDiv");
+			window.Bokeh.embed.embed_item(plotObj, divId);
 		}
 	}
 
@@ -94,6 +97,7 @@
 							(e, i) => get_color(i)
 						);
 				}
+				spec.config.header = bar_plot_header_encoding(darkmode);
 				break;
 			default:
 				break;
@@ -149,9 +153,6 @@
 	let plugin_scripts = [];
 
 	const resolves = [];
-	const bokehPromises = Array(5)
-		.fill(0)
-		.map((_, i) => createPromise(i));
 
 	const initializeBokeh = (index) => {
 		if (type == "bokeh") {
@@ -190,11 +191,11 @@
 </script>
 
 {#if value && type == "plotly"}
-	<div bind:this={plotDiv} />
+	<div data-testid={"plotly"} bind:this={plotDiv} />
 {:else if type == "bokeh"}
-	<div id="bokehDiv" class="gradio-bokeh"/>
+	<div data-testid={"bokeh"} id={divId} class="gradio-bokeh"/>
 {:else if type == "altair"}
-	<div class="altair layout">
+	<div data-testid={"altair"} class="altair layout">
 		<Vega {spec} />
 		{#if caption}
 			<div class="caption layout">
@@ -203,12 +204,12 @@
 		{/if}
 	</div>
 {:else if type == "matplotlib"}
-	<div class="matplotlib layout">
+	<div data-testid={"matplotlib"} class="matplotlib layout">
 		<!-- svelte-ignore a11y-missing-attribute -->
 		<img src={plot} />
 	</div>
 {:else}
-	<Empty size="large" unpadded_box={true}><PlotIcon /></Empty>
+	<Empty  unpadded_box={true} size="large"><PlotIcon /></Empty>
 {/if}
 
 <style>

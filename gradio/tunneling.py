@@ -2,12 +2,27 @@ import atexit
 import os
 import platform
 import re
+import stat
 import subprocess
 from pathlib import Path
 from typing import List
 
+import requests
+
 VERSION = "0.2"
 CURRENT_TUNNELS: List["Tunnel"] = []
+
+machine = platform.machine()
+if machine == "x86_64":
+    machine = "amd64"
+
+BINARY_REMOTE_NAME = f"frpc_{platform.system().lower()}_{machine.lower()}"
+EXTENSION = ".exe" if os.name == "nt" else ""
+BINARY_URL = f"https://cdn-media.huggingface.co/frpc-gradio-{VERSION}/{BINARY_REMOTE_NAME}{EXTENSION}"
+
+BINARY_FILENAME = f"{BINARY_REMOTE_NAME}_v{VERSION}"
+BINARY_FOLDER = Path(__file__).parent
+BINARY_PATH = f"{BINARY_FOLDER / BINARY_FILENAME}"
 
 
 class Tunnel:
@@ -22,23 +37,8 @@ class Tunnel:
 
     @staticmethod
     def download_binary():
-        machine = platform.machine()
-        if machine == "x86_64":
-            machine = "amd64"
-
-        # Check if the file exist
-        binary_name = f"frpc_{platform.system().lower()}_{machine.lower()}"
-        binary_path = str(Path(__file__).parent / binary_name) + f"_v{VERSION}"
-
-        extension = ".exe" if os.name == "nt" else ""
-
-        if not Path(binary_path).exists():
-            import stat
-
-            import requests
-
-            binary_url = f"https://cdn-media.huggingface.co/frpc-gradio-{VERSION}/{binary_name}{extension}"
-            resp = requests.get(binary_url)
+        if not Path(BINARY_PATH).exists():
+            resp = requests.get(BINARY_URL)
 
             if resp.status_code == 403:
                 raise OSError(
@@ -49,16 +49,14 @@ class Tunnel:
             resp.raise_for_status()
 
             # Save file data to local copy
-            with open(binary_path, "wb") as file:
+            with open(BINARY_PATH, "wb") as file:
                 file.write(resp.content)
-            st = os.stat(binary_path)
-            os.chmod(binary_path, st.st_mode | stat.S_IEXEC)
-
-        return binary_path
+            st = os.stat(BINARY_PATH)
+            os.chmod(BINARY_PATH, st.st_mode | stat.S_IEXEC)
 
     def start_tunnel(self) -> str:
-        binary_path = self.download_binary()
-        self.url = self._start_tunnel(binary_path)
+        self.download_binary()
+        self.url = self._start_tunnel(BINARY_PATH)
         return self.url
 
     def kill(self):

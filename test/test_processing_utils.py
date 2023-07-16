@@ -1,3 +1,6 @@
+import base64
+import io
+import logging
 import os
 import shutil
 import tempfile
@@ -6,15 +9,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import ffmpy
-import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from gradio_client import media_data
-from PIL import Image
+from PIL import Image, ImageCms
 
-from gradio import processing_utils
-
-os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
+from gradio import components, processing_utils, utils
 
 
 class TestImagePreprocessing:
@@ -24,9 +24,19 @@ class TestImagePreprocessing:
         )
         assert isinstance(output_image, Image.Image)
 
+        b64_img_without_header = deepcopy(media_data.BASE64_IMAGE).split(",")[1]
+        output_image_without_header = processing_utils.decode_base64_to_image(
+            b64_img_without_header
+        )
+
+        assert output_image == output_image_without_header
+
     def test_encode_plot_to_base64(self):
-        plt.plot([1, 2, 3, 4])
-        output_base64 = processing_utils.encode_plot_to_base64(plt)
+        with utils.MatplotlibBackendMananger():
+            import matplotlib.pyplot as plt
+
+            plt.plot([1, 2, 3, 4])
+            output_base64 = processing_utils.encode_plot_to_base64(plt)
         assert output_base64.startswith(
             "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAo"
         )
@@ -45,15 +55,48 @@ class TestImagePreprocessing:
         output_base64 = processing_utils.encode_pil_to_base64(img)
         assert output_base64 == deepcopy(media_data.ARRAY_TO_BASE64_IMAGE)
 
-    def test_save_pil_to_file_keeps_pnginfo(self):
+    def test_save_pil_to_file_keeps_pnginfo(self, tmp_path):
         input_img = Image.open("gradio/test_data/test_image.png")
         input_img = input_img.convert("RGB")
         input_img.info = {"key1": "value1", "key2": "value2"}
 
-        file_obj = processing_utils.save_pil_to_file(input_img)
+        file_obj = components.Image().pil_to_temp_file(input_img, dir=tmp_path)
         output_img = Image.open(file_obj)
 
         assert output_img.info == input_img.info
+
+    def test_np_pil_encode_to_the_same(self, tmp_path):
+        arr = np.random.randint(0, 255, size=(100, 100, 3), dtype=np.uint8)
+        pil = Image.fromarray(arr)
+        comp = components.Image()
+        assert comp.pil_to_temp_file(pil, dir=tmp_path) == comp.img_array_to_temp_file(
+            arr, dir=tmp_path
+        )
+
+    def test_encode_pil_to_temp_file_metadata_color_profile(self, tmp_path):
+        # Read image
+        img = Image.open("gradio/test_data/test_image.png")
+        img_metadata = Image.open("gradio/test_data/test_image.png")
+        img_metadata.info = {"key1": "value1", "key2": "value2"}
+
+        # Creating sRGB profile
+        profile = ImageCms.createProfile("sRGB")
+        profile2 = ImageCms.ImageCmsProfile(profile)
+        img.save(tmp_path / "img_color_profile.png", icc_profile=profile2.tobytes())
+        img_cp1 = Image.open(str(tmp_path / "img_color_profile.png"))
+
+        # Creating XYZ profile
+        profile = ImageCms.createProfile("XYZ")
+        profile2 = ImageCms.ImageCmsProfile(profile)
+        img.save(tmp_path / "img_color_profile_2.png", icc_profile=profile2.tobytes())
+        img_cp2 = Image.open(str(tmp_path / "img_color_profile_2.png"))
+
+        comp = components.Image()
+        img_path = comp.pil_to_temp_file(img, dir=tmp_path)
+        img_metadata_path = comp.pil_to_temp_file(img_metadata, dir=tmp_path)
+        img_cp1_path = comp.pil_to_temp_file(img_cp1, dir=tmp_path)
+        img_cp2_path = comp.pil_to_temp_file(img_cp2, dir=tmp_path)
+        assert len({img_path, img_metadata_path, img_cp1_path, img_cp2_path}) == 4
 
     def test_encode_pil_to_base64_keeps_pnginfo(self):
         input_img = Image.open("gradio/test_data/test_image.png")
@@ -129,7 +172,7 @@ class TestOutputPreprocessing:
     ]
 
     def test_float_conversion_dtype(self):
-        """Test any convertion from a float dtype to an other."""
+        """Test any conversion from a float dtype to an other."""
 
         x = np.array([-1, 1])
         # Test all combinations of dtypes conversions
@@ -178,15 +221,16 @@ class TestVideoProcessing:
     def test_video_has_playable_codecs_catches_exceptions(
         self, exception_to_raise, test_file_dir
     ):
-        with patch("ffmpy.FFprobe.run", side_effect=exception_to_raise):
-            with tempfile.NamedTemporaryFile(
-                suffix="out.avi", delete=False
-            ) as tmp_not_playable_vid:
-                shutil.copy(
-                    str(test_file_dir / "bad_video_sample.mp4"),
-                    tmp_not_playable_vid.name,
-                )
-                assert processing_utils.video_is_playable(tmp_not_playable_vid.name)
+        with patch(
+            "ffmpy.FFprobe.run", side_effect=exception_to_raise
+        ), tempfile.NamedTemporaryFile(
+            suffix="out.avi", delete=False
+        ) as tmp_not_playable_vid:
+            shutil.copy(
+                str(test_file_dir / "bad_video_sample.mp4"),
+                tmp_not_playable_vid.name,
+            )
+            assert processing_utils.video_is_playable(tmp_not_playable_vid.name)
 
     def test_convert_video_to_playable_mp4(self, test_file_dir):
         with tempfile.NamedTemporaryFile(
@@ -195,9 +239,12 @@ class TestVideoProcessing:
             shutil.copy(
                 str(test_file_dir / "bad_video_sample.mp4"), tmp_not_playable_vid.name
             )
-            playable_vid = processing_utils.convert_video_to_playable_mp4(
-                tmp_not_playable_vid.name
-            )
+            with patch("os.remove", wraps=os.remove) as mock_remove:
+                playable_vid = processing_utils.convert_video_to_playable_mp4(
+                    tmp_not_playable_vid.name
+                )
+            # check tempfile got deleted
+            assert not Path(mock_remove.call_args[0][0]).exists()
             assert processing_utils.video_is_playable(playable_vid)
 
     @patch("ffmpy.FFmpeg.run", side_effect=raise_ffmpy_runtime_exception)
@@ -215,3 +262,20 @@ class TestVideoProcessing:
             )
             # If the conversion succeeded it'd be .mp4
             assert Path(playable_vid).suffix == ".avi"
+
+
+def test_decode_base64_to_image_does_not_crash_when_image_has_bogus_exif_data(caplog):
+    from PIL.PngImagePlugin import PngInfo
+
+    caplog.set_level(logging.WARNING)
+    i = Image.new("RGB", (32, 32), "orange")
+    bio = io.BytesIO()
+    # since `exif` is the `.info` key for EXIF data parsed from a JPEG,
+    # adding an iTXt chunk with the same name should trigger the warning
+    pi = PngInfo()
+    pi.add_text("exif", "bogus")
+    i.save(bio, format="png", pnginfo=pi)
+    bio.seek(0)
+    encoded = base64.b64encode(bio.getvalue()).decode()
+    assert processing_utils.decode_base64_to_image(encoded).size == (32, 32)
+    assert "Failed to transpose image" in caplog.text

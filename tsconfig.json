@@ -8,8 +8,7 @@
 			svelte-preprocess cannot figure out whether you have a value or a type, so tell TypeScript
 			to enforce using \`import type\` instead of \`import\` for Types.
 			*/
-		"importsNotUsedAsValues": "error",
-		"isolatedModules": true,
+		"verbatimModuleSyntax": true,
 		"resolveJsonModule": true,
 		"strict": true,
 		"sourceMap": true,
@@ -19,16 +18,17 @@
 		"allowJs": true,
 		"checkJs": true,
 		"outDir": "dist",
-		"baseUrl": "."
+		"baseUrl": ".",
+		"paths": {
+			"./pure": ["./pure.js"]
+		}
 	},
 	"exclude": [
 		"**/dist/**/*",
 		"**/public/**/*",
-		"**/*.config.js",
+		"**/.config/**/*",
 		"**/*.test.ts",
 		"**/dist",
-		"**/workbench/**/*",
-		"**/Plot.svelte",
 		".github/**/*",
 		"**/demo/**/*",
 		"**/gradio/**/*",
@@ -38,7 +38,9 @@
 		"**/test/**/*",
 		"**/website/**/*",
 		"**/node_modules/**/*",
-		"**/venv/**/*"
+		"**/venv/**/*",
+		"client/js/**",
+		"**/vite.config*"
 	],
 	"include": [
 		"**/*.d.ts",

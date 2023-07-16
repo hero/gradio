@@ -1,20 +1,20 @@
 <script lang="ts">
-	import {
-		createEventDispatcher,
-		afterUpdate,
-		tick,
-		beforeUpdate
-	} from "svelte";
-	import { BlockLabel, Empty, IconButton } from "@gradio/atoms";
+	import { createEventDispatcher, afterUpdate, tick } from "svelte";
+	import { BlockLabel, Empty, IconButton, ShareButton } from "@gradio/atoms";
 	import type { FileData } from "@gradio/upload";
 	import { Video, Download } from "@gradio/icons";
+	import type { ShareData } from "@gradio/utils";
+	import { uploadToHuggingFace } from "@gradio/utils";
 
 	import Player from "./Player.svelte";
 
 	export let value: FileData | null = null;
 	export let subtitle: FileData | null = null;
 	export let label: string | undefined = undefined;
-	export let show_label: boolean = true;
+	export let show_label = true;
+	export let autoplay: boolean;
+	export let show_share_button: boolean = true;
+
 	let old_value: FileData | null = null;
 	let old_subtitle: FileData | null = null;
 
@@ -22,7 +22,8 @@
 		change: FileData;
 		play: undefined;
 		pause: undefined;
-		ended: undefined;
+		end: undefined;
+		stop: undefined;
 	}>();
 
 	$: value && dispatch("change", value);
@@ -46,18 +47,22 @@
 
 <BlockLabel {show_label} Icon={Video} label={label || "Video"} />
 {#if value === null}
-	<Empty size="large" unpadded_box={true}><Video /></Empty>
+	<Empty unpadded_box={true} size="large"><Video /></Empty>
 {:else}
 	<!-- svelte-ignore a11y-media-has-caption -->
-	<Player
-		src={value.data}
-		subtitle={subtitle?.data}
-		on:play
-		on:pause
-		on:ended
-		mirror={false}
-	/>
-	<div class="download" data-testid="download-div">
+	{#key value.data}
+		<Player
+			src={value.data}
+			subtitle={subtitle?.data}
+			{autoplay}
+			on:play
+			on:pause
+			on:ended
+			mirror={false}
+			{label}
+		/>
+	{/key}
+	<div class="icon-buttons" data-testid="download-div">
 		<a
 			href={value.data}
 			target={window.__is_colab__ ? "_blank" : null}
@@ -65,13 +70,27 @@
 		>
 			<IconButton Icon={Download} label="Download" />
 		</a>
+		{#if show_share_button}
+			<ShareButton
+				on:error
+				on:share
+				{value}
+				formatter={async (value) => {
+					if (!value) return "";
+					let url = await uploadToHuggingFace(value.data, "url");
+					return url;
+				}}
+			/>
+		{/if}
 	</div>
 {/if}
 
 <style>
-	.download {
+	.icon-buttons {
+		display: flex;
 		position: absolute;
 		top: 6px;
 		right: 6px;
+		gap: var(--size-1);
 	}
 </style>

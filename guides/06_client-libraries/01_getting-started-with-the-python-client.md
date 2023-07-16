@@ -22,7 +22,7 @@ client.predict("audio_sample.wav")
 
 The Gradio client works with any hosted Gradio app, whether it be an image generator, a text summarizer, a stateful chatbot, a tax calculator, or anything else! The Gradio Client is mostly used with apps hosted on [Hugging Face Spaces](https://hf.space), but your app can be hosted anywhere, such as your own server.
 
-**Prequisites**: To use the Gradio client, you do *not* need to know the `gradio` library in great detail. However, it is helpful to have general familiarity with Gradio's concepts of input and output components.
+**Prerequisites**: To use the Gradio client, you do *not* need to know the `gradio` library in great detail. However, it is helpful to have general familiarity with Gradio's concepts of input and output components.
 
 ## Installation
 
@@ -56,17 +56,20 @@ client = Client("abidlabs/my-private-space", hf_token="...")
 ```
 
 
-## Duplicating a Space for private use**
+## Duplicating a Space for private use
 
 While you can use any public Space as an API, you may get rate limited by Hugging Face if you make too many requests. For unlimited usage of a Space, simply duplicate the Space to create a private Space,
-and then use it to make as many requests as you'd like!
+and then use it to make as many requests as you'd like! 
 
-The `gradio_client` includes a class method: `Client.duplicate()` to make this process simple:
+The `gradio_client` includes a class method: `Client.duplicate()` to make this process simple (you'll need to pass in your [Hugging Face token](https://huggingface.co/settings/tokens) or be logged in using the Hugging Face CLI):
 
 ```python
+import os
 from gradio_client import Client
 
-client = Client.duplicate("abidlabs/whisper") 
+HF_TOKEN = os.environ.get("HF_TOKEN")
+
+client = Client.duplicate("abidlabs/whisper", hf_token=HF_TOKEN) 
 client.predict("audio_sample.wav")  
 
 >> "This is a test of the whisper speech recognition model."
@@ -145,7 +148,7 @@ client.predict("https://audio-samples.github.io/samples/mp3/blizzard_uncondition
 ```
 
 
-## Running jobs asyncronously
+## Running jobs asynchronously
 
 Oe should note that `.predict()` is a *blocking* operation as it waits for the operation to complete before returning the prediction. 
 

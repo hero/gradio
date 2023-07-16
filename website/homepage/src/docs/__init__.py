@@ -1,14 +1,20 @@
 import os
+import re
 
 from gradio_client.documentation import document_cls, generate_documentation
 from gradio.events import EventListener
+import markdown2
+from urllib.request import urlretrieve
+
 
 from ..guides import guides
 
 DIR = os.path.dirname(__file__)
 GRADIO_DIR = "../../"
 TEMPLATE_FILE = os.path.join(DIR, "template.html")
+TEMP_TEMPLATE = os.path.join(DIR, "temporary_template.html")
 DEMOS_DIR = os.path.join(GRADIO_DIR, "demo")
+JS_CLIENT_README = os.path.join(GRADIO_DIR, "client", "js", "README.md")
 
 docs = generate_documentation()
 docs["component"].sort(key=lambda x: x["name"])
@@ -56,7 +62,19 @@ def add_demos():
 
 add_demos()
 
-ordered_events = ["Change()", "Click()", "Submit()", "Edit()", "Clear()", "Play()", "Pause()", "Stream()", "Blur()", "Upload()"]
+ordered_events = [
+    "Change()",
+    "Click()",
+    "Submit()",
+    "Edit()",
+    "Clear()",
+    "Play()",
+    "Pause()",
+    "Stream()",
+    "Blur()",
+    "Upload()",
+]
+
 
 def add_supported_events():
     for component in docs["component"]:
@@ -124,12 +142,12 @@ def override_signature(name, signature):
                 cls["override_signature"] = signature
 
 
-override_signature("Blocks", "with gradio.Blocks():")
-override_signature("Row", "with gradio.Row():")
-override_signature("Column", "with gradio.Column():")
-override_signature("Tab", "with gradio.Tab():")
-override_signature("Group", "with gradio.Group():")
-override_signature("Box", "with gradio.Box():")
+override_signature("Blocks", "with gr.Blocks():")
+override_signature("Row", "with gr.Row():")
+override_signature("Column", "with gr.Column():")
+override_signature("Tab", "with gr.Tab():")
+override_signature("Group", "with gr.Group():")
+override_signature("Box", "with gr.Box():")
 override_signature("Dataset", "gr.Dataset(components, samples)")
 
 
@@ -141,9 +159,33 @@ def find_cls(target_cls):
     raise ValueError("Class not found")
 
 
+def build_js_client():
+    with open(JS_CLIENT_README, "r") as f:
+        js_docs = f.read()
+    js_docs = re.sub(
+        r"```([a-z]+)\n",
+        lambda x: f"<div class='codeblock'><pre><code class='lang-{x.group(1)}'>",
+        js_docs,
+    )
+    js_docs = re.sub(r"```", "</code></pre></div>", js_docs)
+    with open(TEMP_TEMPLATE, "w") as temp_html:
+        temp_html.write(
+            markdown2.markdown(
+                js_docs,
+                extras=[
+                    "target-blank-links",
+                    "header-ids",
+                    "tables",
+                    "fenced-code-blocks",
+                ],
+            )
+        )
+
+
 def build(output_dir, jinja_env, gradio_wheel_url, gradio_version):
     os.makedirs(output_dir, exist_ok=True)
     template = jinja_env.get_template("docs/template.html")
+    build_js_client()
     output = template.render(
         docs=docs,
         ordered_events=ordered_events,
@@ -151,7 +193,7 @@ def build(output_dir, jinja_env, gradio_wheel_url, gradio_version):
         version="main",
         gradio_version=gradio_version,
         gradio_wheel_url=gradio_wheel_url,
-        canonical_suffix="/main"
+        canonical_suffix="/main",
     )
     output_folder = os.path.join(output_dir, "docs")
     os.makedirs(output_folder)
@@ -160,6 +202,11 @@ def build(output_dir, jinja_env, gradio_wheel_url, gradio_version):
     output_file = os.path.join(output_main, "index.html")
     with open(output_file, "w") as index_html:
         index_html.write(output)
+    if not os.path.exists(f"v{gradio_version}_template.html"):
+        urlretrieve(
+            f"https://huggingface.co/datasets/gradio/docs/resolve/main/v{gradio_version}_template.html",
+            f"src/docs/v{gradio_version}_template.html",
+        )
     template = jinja_env.get_template(f"docs/v{gradio_version}_template.html")
     output = template.render()
     version_docs_file = os.path.join(output_folder, "index.html")
@@ -168,9 +215,14 @@ def build(output_dir, jinja_env, gradio_wheel_url, gradio_version):
 
 
 def build_pip_template(version, jinja_env):
+    build_js_client()
     template = jinja_env.get_template("docs/template.html")
     output = template.render(
-        docs=docs, find_cls=find_cls, version="pip", gradio_version=version, canonical_suffix="", ordered_events=ordered_events
+        docs=docs,
+        find_cls=find_cls,
+        version="pip",
+        gradio_version=version,
+        canonical_suffix="",
+        ordered_events=ordered_events,
     )
-    with open(f"src/docs/v{version}_template.html", "w+") as template_file:
-        template_file.write(output)
+    return output

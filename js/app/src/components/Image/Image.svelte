@@ -1,3 +1,5 @@
+<svelte:options accessors={true} />
+
 <script lang="ts">
 	import { createEventDispatcher } from "svelte";
 	import { Image, StaticImage } from "@gradio/image";
@@ -5,9 +7,7 @@
 	import { _ } from "svelte-i18n";
 	import { Component as StatusTracker } from "../StatusTracker/";
 	import type { LoadingStatus } from "../StatusTracker/types";
-	import type { Styles } from "@gradio/utils";
 	import UploadText from "../UploadText.svelte";
-	import type { SelectData } from "@gradio/utils";
 
 	export let elem_id: string = "";
 	export let elem_classes: Array<string> = [];
@@ -19,18 +19,22 @@
 	export let show_label: boolean;
 	export let streaming: boolean;
 	export let pending: boolean;
-	export let style: Styles = {};
+	export let height: number | undefined;
+	export let width: number | undefined;
 	export let mirror_webcam: boolean;
 	export let shape: [number, number];
 	export let brush_radius: number;
 	export let selectable: boolean = false;
-
+	export let container: boolean = false;
+	export let scale: number | null = null;
+	export let min_width: number | undefined = undefined;
 	export let loading_status: LoadingStatus;
-
 	export let mode: "static" | "dynamic";
+	export let show_share_button: boolean = false;
 
 	const dispatch = createEventDispatcher<{
 		change: undefined;
+		error: string;
 	}>();
 
 	$: value, dispatch("change");
@@ -49,15 +53,26 @@
 	padding={false}
 	{elem_id}
 	{elem_classes}
-	style={{
-		height: style.height || (source === "webcam" ? undefined : FIXED_HEIGHT),
-		width: style.width
-	}}
+	height={height ||
+		(source === "webcam" || mode === "static" ? undefined : FIXED_HEIGHT)}
+	{width}
 	allow_overflow={false}
+	{container}
+	{scale}
+	{min_width}
 >
 	<StatusTracker {...loading_status} />
 	{#if mode === "static"}
-		<StaticImage on:select {value} {label} {show_label} {selectable} />
+		<StaticImage
+			on:select
+			on:share
+			on:error
+			{value}
+			{label}
+			{show_label}
+			{selectable}
+			{show_share_button}
+		/>
 	{:else}
 		<Image
 			{brush_radius}
@@ -68,15 +83,15 @@
 			{selectable}
 			on:edit
 			on:clear
-			on:change
 			on:stream
 			on:drag={({ detail }) => (dragging = detail)}
 			on:upload
 			on:select
+			on:share
 			on:error={({ detail }) => {
 				loading_status = loading_status || {};
 				loading_status.status = "error";
-				loading_status.message = detail;
+				dispatch("error", detail);
 			}}
 			{label}
 			{show_label}

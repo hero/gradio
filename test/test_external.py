@@ -11,7 +11,7 @@ from gradio_client import media_data
 
 import gradio as gr
 from gradio.context import Context
-from gradio.exceptions import InvalidApiName
+from gradio.exceptions import InvalidApiNameError
 from gradio.external import TooManyRequestsError, cols_to_rows, get_tabular_examples
 
 """
@@ -68,7 +68,7 @@ class TestLoadInterface:
     def test_summarization(self):
         model_type = "summarization"
         interface = gr.load(
-            "models/facebook/bart-large-cnn", api_key=None, alias=model_type
+            "models/facebook/bart-large-cnn", hf_token=None, alias=model_type
         )
         assert interface.__name__ == model_type
         assert isinstance(interface.input_components[0], gr.Textbox)
@@ -77,7 +77,7 @@ class TestLoadInterface:
     def test_translation(self):
         model_type = "translation"
         interface = gr.load(
-            "models/facebook/bart-large-cnn", api_key=None, alias=model_type
+            "models/facebook/bart-large-cnn", hf_token=None, alias=model_type
         )
         assert interface.__name__ == model_type
         assert isinstance(interface.input_components[0], gr.Textbox)
@@ -86,7 +86,7 @@ class TestLoadInterface:
     def test_text2text_generation(self):
         model_type = "text2text-generation"
         interface = gr.load(
-            "models/sshleifer/tiny-mbart", api_key=None, alias=model_type
+            "models/sshleifer/tiny-mbart", hf_token=None, alias=model_type
         )
         assert interface.__name__ == model_type
         assert isinstance(interface.input_components[0], gr.Textbox)
@@ -96,7 +96,7 @@ class TestLoadInterface:
         model_type = "text-classification"
         interface = gr.load(
             "models/distilbert-base-uncased-finetuned-sst-2-english",
-            api_key=None,
+            hf_token=None,
             alias=model_type,
         )
         assert interface.__name__ == model_type
@@ -105,7 +105,7 @@ class TestLoadInterface:
 
     def test_fill_mask(self):
         model_type = "fill-mask"
-        interface = gr.load("models/bert-base-uncased", api_key=None, alias=model_type)
+        interface = gr.load("models/bert-base-uncased", hf_token=None, alias=model_type)
         assert interface.__name__ == model_type
         assert isinstance(interface.input_components[0], gr.Textbox)
         assert isinstance(interface.output_components[0], gr.Label)
@@ -113,7 +113,7 @@ class TestLoadInterface:
     def test_zero_shot_classification(self):
         model_type = "zero-shot-classification"
         interface = gr.load(
-            "models/facebook/bart-large-mnli", api_key=None, alias=model_type
+            "models/facebook/bart-large-mnli", hf_token=None, alias=model_type
         )
         assert interface.__name__ == model_type
         assert isinstance(interface.input_components[0], gr.Textbox)
@@ -124,7 +124,7 @@ class TestLoadInterface:
     def test_automatic_speech_recognition(self):
         model_type = "automatic-speech-recognition"
         interface = gr.load(
-            "models/facebook/wav2vec2-base-960h", api_key=None, alias=model_type
+            "models/facebook/wav2vec2-base-960h", hf_token=None, alias=model_type
         )
         assert interface.__name__ == model_type
         assert isinstance(interface.input_components[0], gr.Audio)
@@ -133,7 +133,7 @@ class TestLoadInterface:
     def test_image_classification(self):
         model_type = "image-classification"
         interface = gr.load(
-            "models/google/vit-base-patch16-224", api_key=None, alias=model_type
+            "models/google/vit-base-patch16-224", hf_token=None, alias=model_type
         )
         assert interface.__name__ == model_type
         assert isinstance(interface.input_components[0], gr.Image)
@@ -143,7 +143,7 @@ class TestLoadInterface:
         model_type = "feature-extraction"
         interface = gr.load(
             "models/sentence-transformers/distilbert-base-nli-mean-tokens",
-            api_key=None,
+            hf_token=None,
             alias=model_type,
         )
         assert interface.__name__ == model_type
@@ -154,7 +154,7 @@ class TestLoadInterface:
         model_type = "text-to-speech"
         interface = gr.load(
             "models/julien-c/ljspeech_tts_train_tacotron2_raw_phn_tacotron_g2p_en_no_space_train",
-            api_key=None,
+            hf_token=None,
             alias=model_type,
         )
         assert interface.__name__ == model_type
@@ -165,7 +165,7 @@ class TestLoadInterface:
         model_type = "text-to-speech"
         interface = gr.load(
             "models/julien-c/ljspeech_tts_train_tacotron2_raw_phn_tacotron_g2p_en_no_space_train",
-            api_key=None,
+            hf_token=None,
             alias=model_type,
         )
         assert interface.__name__ == model_type
@@ -175,7 +175,7 @@ class TestLoadInterface:
     def test_text_to_image(self):
         model_type = "text-to-image"
         interface = gr.load(
-            "models/osanseviero/BigGAN-deep-128", api_key=None, alias=model_type
+            "models/osanseviero/BigGAN-deep-128", hf_token=None, alias=model_type
         )
         assert interface.__name__ == model_type
         assert isinstance(interface.input_components[0], gr.Textbox)
@@ -183,23 +183,23 @@ class TestLoadInterface:
 
     def test_english_to_spanish(self):
         with pytest.warns(UserWarning):
-            io = gr.load("spaces/abidlabs/english_to_spanish", title="hi")
+            io = gr.load("spaces/gradio-tests/english_to_spanish", title="hi")
         assert isinstance(io.input_components[0], gr.Textbox)
         assert isinstance(io.output_components[0], gr.Textbox)
 
     def test_sentiment_model(self):
         io = gr.load("models/distilbert-base-uncased-finetuned-sst-2-english")
         try:
-            output = io("I am happy, I love you")
-            assert json.load(open(output))["label"] == "POSITIVE"
+            with open(io("I am happy, I love you")) as f:
+                assert json.load(f)["label"] == "POSITIVE"
         except TooManyRequestsError:
             pass
 
     def test_image_classification_model(self):
         io = gr.Blocks.load(name="models/google/vit-base-patch16-224")
         try:
-            output = io("gradio/test_data/lion.jpg")
-            assert json.load(open(output))["label"] == "lion"
+            with open(io("gradio/test_data/lion.jpg")) as f:
+                assert json.load(f)["label"] == "lion"
         except TooManyRequestsError:
             pass
 
@@ -212,11 +212,19 @@ class TestLoadInterface:
             pass
 
     def test_numerical_to_label_space(self):
-        io = gr.load("spaces/abidlabs/titanic-survival")
+        io = gr.load("spaces/gradio-tests/titanic-survival")
         try:
-            output = io("male", 77, 10)
-            assert json.load(open(output))["label"] == "Perishes"
             assert io.theme.name == "soft"
+            with open(io("male", 77, 10)) as f:
+                assert json.load(f)["label"] == "Perishes"
+        except TooManyRequestsError:
+            pass
+
+    def test_visual_question_answering(self):
+        io = gr.load("models/dandelin/vilt-b32-finetuned-vqa")
+        try:
+            output = io("gradio/test_data/lion.jpg", "What is in the image?")
+            assert isinstance(output, str) and output.endswith(".json")
         except TooManyRequestsError:
             pass
 
@@ -265,7 +273,7 @@ class TestLoadInterface:
                 ):
                     pass
                 else:
-                    assert False
+                    raise AssertionError()
             else:
                 assert resp.json()["data"] is not None
         finally:
@@ -280,8 +288,10 @@ class TestLoadInterface:
             pass
 
     def test_private_space(self):
-        api_key = "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"  # Intentionally revealing this key for testing purposes
-        io = gr.load("spaces/gradio-tests/not-actually-private-space", api_key=api_key)
+        hf_token = "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"  # Intentionally revealing this key for testing purposes
+        io = gr.load(
+            "spaces/gradio-tests/not-actually-private-space", hf_token=hf_token
+        )
         try:
             output = io("abc")
             assert output == "abc"
@@ -290,9 +300,9 @@ class TestLoadInterface:
             pass
 
     def test_private_space_audio(self):
-        api_key = "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"  # Intentionally revealing this key for testing purposes
+        hf_token = "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"  # Intentionally revealing this key for testing purposes
         io = gr.load(
-            "spaces/gradio-tests/not-actually-private-space-audio", api_key=api_key
+            "spaces/gradio-tests/not-actually-private-space-audio", hf_token=hf_token
         )
         try:
             output = io(media_data.BASE64_AUDIO["name"])
@@ -301,18 +311,18 @@ class TestLoadInterface:
             pass
 
     def test_multiple_spaces_one_private(self):
-        api_key = "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"  # Intentionally revealing this key for testing purposes
+        hf_token = "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"  # Intentionally revealing this key for testing purposes
         with gr.Blocks():
-            gr.load("spaces/gradio-tests/not-actually-private-space", api_key=api_key)
+            gr.load("spaces/gradio-tests/not-actually-private-space", hf_token=hf_token)
             gr.load(
                 "spaces/gradio/test-loading-examples",
             )
-        assert Context.hf_token == api_key
+        assert Context.hf_token == hf_token
 
     def test_loading_files_via_proxy_works(self):
-        api_key = "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"  # Intentionally revealing this key for testing purposes
+        hf_token = "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"  # Intentionally revealing this key for testing purposes
         io = gr.load(
-            "spaces/gradio-tests/test-loading-examples-private", api_key=api_key
+            "spaces/gradio-tests/test-loading-examples-private", hf_token=hf_token
         )
         assert io.theme.name == "default"
         app, _, _ = io.launch(prevent_thread_lock=True)
@@ -345,11 +355,8 @@ class TestLoadInterfaceWithExamples:
     def test_root_url(self):
         demo = gr.load("spaces/gradio/test-loading-examples")
         assert all(
-            [
-                c["props"]["root_url"]
-                == "https://gradio-test-loading-examples.hf.space/"
-                for c in demo.get_config_file()["components"]
-            ]
+            c["props"]["root_url"] == "https://gradio-test-loading-examples.hf.space/"
+            for c in demo.get_config_file()["components"]
         )
 
     def test_root_url_deserialization(self):
@@ -359,11 +366,11 @@ class TestLoadInterfaceWithExamples:
 
     def test_interface_with_examples(self):
         # This demo has the "fake_event" correctly removed
-        demo = gr.load("spaces/freddyaboulton/calculator")
+        demo = gr.load("spaces/gradio-tests/test-calculator-1")
         assert demo(2, "add", 3) == 5
 
         # This demo still has the "fake_event". both should work
-        demo = gr.load("spaces/abidlabs/test-calculator-2")
+        demo = gr.load("spaces/gradio-tests/test-calculator-2")
         assert demo(2, "add", 4) == 6
 
 
@@ -427,20 +434,20 @@ def check_dataframe(config):
 def check_dataset(config, readme_examples):
     # No Examples
     if not any(readme_examples.values()):
-        assert not any([c for c in config["components"] if c["type"] == "dataset"])
+        assert not any(c for c in config["components"] if c["type"] == "dataset")
     else:
         dataset = next(c for c in config["components"] if c["type"] == "dataset")
         assert dataset["props"]["samples"] == [[cols_to_rows(readme_examples)[1]]]
 
 
 def test_load_blocks_with_default_values():
-    io = gr.load("spaces/abidlabs/min-dalle")
+    io = gr.load("spaces/gradio-tests/min-dalle")
     assert isinstance(io.get_config_file()["components"][0]["props"]["value"], list)
 
-    io = gr.load("spaces/abidlabs/min-dalle-later")
+    io = gr.load("spaces/gradio-tests/min-dalle-later")
     assert isinstance(io.get_config_file()["components"][0]["props"]["value"], list)
 
-    io = gr.load("spaces/freddyaboulton/dataframe_load")
+    io = gr.load("spaces/gradio-tests/dataframe_load")
     assert io.get_config_file()["components"][0]["props"]["value"] == {
         "headers": ["a", "b"],
         "data": [[1, 4], [2, 5], [3, 6]],
@@ -467,7 +474,7 @@ def test_can_load_tabular_model_with_different_widget_data(hypothetical_readme):
 
 
 def test_raise_value_error_when_api_name_invalid():
-    with pytest.raises(InvalidApiName):
+    with pytest.raises(InvalidApiNameError):
         demo = gr.Blocks.load(name="spaces/gradio/hello_world")
         demo("freddy", api_name="route does not exist")
 

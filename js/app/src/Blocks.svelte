@@ -4,11 +4,8 @@
 	import type { client } from "@gradio/client";
 
 	import { component_map } from "./components/directory";
-	import {
-		create_loading_status_store,
-		app_state,
-		LoadingStatusCollection
-	} from "./stores";
+	import { create_loading_status_store, app_state } from "./stores";
+	import type { LoadingStatusCollection } from "./stores";
 
 	import type {
 		ComponentMeta,
@@ -19,27 +16,32 @@
 	import { setupi18n } from "./i18n";
 	import Render from "./Render.svelte";
 	import { ApiDocs } from "./api_docs/";
+	import type { ThemeMode } from "./components/types";
+	import Toast from "./components/StatusTracker/Toast.svelte";
+	import type { ToastMessage } from "./components/StatusTracker/types";
+	import type { ShareData } from "@gradio/utils";
 
 	import logo from "./images/logo.svg";
-	import api_logo from "/static/img/api-logo.svg";
+	import api_logo from "./api_docs/img/api-logo.svg";
 
 	setupi18n();
 
 	export let root: string;
-	export let components: Array<ComponentMeta>;
+	export let components: ComponentMeta[];
 	export let layout: LayoutNode;
-	export let dependencies: Array<Dependency>;
+	export let dependencies: Dependency[];
 
-	export let title: string = "Gradio";
-	export let analytics_enabled: boolean = false;
+	export let title = "Gradio";
+	export let analytics_enabled = false;
 	export let target: HTMLElement;
 	export let autoscroll: boolean;
-	export let show_api: boolean = true;
-	export let show_footer: boolean = true;
+	export let show_api = true;
+	export let show_footer = true;
 	export let control_page_title = false;
 	export let app_mode: boolean;
-	export let theme: string;
+	export let theme_mode: ThemeMode;
 	export let app: Awaited<ReturnType<typeof client>>;
+	export let space_id: string | null;
 
 	let loading_status = create_loading_status_store();
 
@@ -88,43 +90,27 @@
 		history.replaceState(null, "", "?" + params.toString());
 	};
 
-	function is_dep(
-		id: number,
-		type: "inputs" | "outputs",
-		deps: Array<Dependency>
-	) {
-		let dep_index = 0;
-		for (;;) {
-			const dep = deps[dep_index];
-			if (dep === undefined) break;
-
-			let dep_item_index = 0;
-			for (;;) {
-				const dep_item = dep[type][dep_item_index];
-				if (dep_item === undefined) break;
+	function is_dep(id: number, type: "inputs" | "outputs", deps: Dependency[]) {
+		for (const dep of deps) {
+			for (const dep_item of dep[type]) {
 				if (dep_item === id) return true;
-				dep_item_index++;
 			}
-
-			dep_index++;
 		}
-
 		return false;
 	}
 
-	const dynamic_ids: Set<number> = components.reduce<Set<number>>(
-		(acc, { id, props }) => {
-			const is_input = is_dep(id, "inputs", dependencies);
-			const is_output = is_dep(id, "outputs", dependencies);
-
-			if (!is_input && !is_output && has_no_default_value(props?.value))
-				acc.add(id); // default dynamic
-			if (is_input) acc.add(id);
-
-			return acc;
-		},
-		new Set()
-	);
+	const dynamic_ids: Set<number> = new Set();
+	for (const comp of components) {
+		const { id, props } = comp;
+		const is_input = is_dep(id, "inputs", dependencies);
+		if (
+			is_input ||
+			(!is_dep(id, "outputs", dependencies) &&
+				has_no_default_value(props?.value))
+		) {
+			dynamic_ids.add(id);
+		}
+	}
 
 	function has_no_default_value(value: any) {
 		return (
@@ -142,29 +128,27 @@
 
 	type LoadedComponent = {
 		Component: ComponentMeta["component"];
-		modes?: Array<string>;
+		modes?: string[];
 		document?: (arg0: Record<string, unknown>) => Documentation;
 	};
 
-	function load_component<T extends ComponentMeta["type"]>(
+	async function load_component<T extends ComponentMeta["type"]>(
 		name: T
 	): Promise<{
 		name: T;
 		component: LoadedComponent;
 	}> {
-		return new Promise(async (res, rej) => {
-			try {
-				const c = await component_map[name]();
-				res({
-					name,
-					component: c as LoadedComponent
-				});
-			} catch (e) {
-				console.error("failed to load: " + name);
-				console.error(e);
-				rej(e);
-			}
-		});
+		try {
+			const c = await component_map[name]();
+			return {
+				name,
+				component: c as LoadedComponent
+			};
+		} catch (e) {
+			console.error(`failed to load: ${name}`);
+			console.error(e);
+			throw e;
+		}
 	}
 
 	const component_set = new Set<
@@ -211,7 +195,9 @@
 
 	function handle_update(data: any, fn_index: number) {
 		const outputs = dependencies[fn_index].outputs;
-		data.forEach((value: any, i: number) => {
+		data?.forEach((value: any, i: number) => {
+			const output = instance_map[outputs[i]];
+			output.props.value_is_output = true;
 			if (
 				typeof value === "object" &&
 				value !== null &&
@@ -221,34 +207,17 @@
 					if (update_key === "__type__") {
 						continue;
 					} else {
-						instance_map[outputs[i]].props[update_key] = update_value;
+						output.props[update_key] = update_value;
 					}
 				}
-				rootNode = rootNode;
 			} else {
-				instance_map[outputs[i]].props.value = value;
+				output.props.value = value;
 			}
 		});
+		rootNode = rootNode;
 	}
 
-	app.on("data", ({ data, fn_index }) => {
-		handle_update(data, fn_index);
-		let status = loading_status.get_status_for_fn(fn_index);
-		if (status === "complete" || status === "error") {
-			dependencies.forEach((dep, i) => {
-				if (
-					dep.trigger_after === fn_index &&
-					(!dep.trigger_only_on_success || status === "complete")
-				) {
-					trigger_api_call(i, null);
-				}
-			});
-		}
-	});
-
-	app.on("status", ({ fn_index, ...status }) => {
-		loading_status.update({ ...status, fn_index });
-	});
+	let submit_map: Map<number, ReturnType<typeof app.submit>> = new Map();
 
 	function set_prop<T extends ComponentMeta>(obj: T, prop: string, val: any) {
 		if (!obj?.props) {
@@ -257,19 +226,64 @@
 		obj.props[prop] = val;
 		rootNode = rootNode;
 	}
-	let handled_dependencies: Array<number[]> = [];
+	let handled_dependencies: number[][] = [];
 
-	const trigger_api_call = (dep_index: number, event_data: unknown) => {
+	let messages: (ToastMessage & { fn_index: number })[] = [];
+	const new_message = (
+		message: string,
+		fn_index: number,
+		type: ToastMessage["type"]
+	) => ({
+		message,
+		fn_index,
+		type,
+		id: ++_error_id
+	});
+	let _error_id = -1;
+
+	let user_left_page: boolean = false;
+	document.addEventListener("visibilitychange", function () {
+		if (document.visibilityState === "hidden") {
+			user_left_page = true;
+		}
+	});
+
+	const MESSAGE_QUOTE_RE = /^'([^]+)'$/;
+
+	const DUPLICATE_MESSAGE =
+		"There is a long queue of requests pending. Duplicate this Space to skip.";
+	const MOBILE_QUEUE_WARNING =
+		"On mobile, the connection can break if this tab is unfocused or the device sleeps, losing your position in queue.";
+	const MOBILE_RECONNECT_MESSAGE =
+		"Lost connection due to leaving page. Rejoining queue...";
+	const SHOW_DUPLICATE_MESSAGE_ON_ETA = 15;
+	const SHOW_MOBILE_QUEUE_WARNING_ON_ETA = 10;
+	const is_mobile_device =
+		/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+			navigator.userAgent
+		);
+	let showed_duplicate_message = false;
+	let showed_mobile_warning = false;
+
+	const trigger_api_call = async (
+		dep_index: number,
+		event_data: unknown = null
+	) => {
 		let dep = dependencies[dep_index];
 		const current_status = loading_status.get_status_for_fn(dep_index);
-		if (current_status === "pending" || current_status === "generating") {
-			return;
+		messages = messages.filter(({ fn_index }) => fn_index !== dep_index);
+		if (dep.cancels) {
+			await Promise.all(
+				dep.cancels.map(async (fn_index) => {
+					const submission = submit_map.get(fn_index);
+					submission?.cancel();
+					return submission;
+				})
+			);
 		}
 
-		if (dep.cancels) {
-			dep.cancels.forEach((fn_index) => {
-				app.cancel("/predict", fn_index);
-			});
+		if (current_status === "pending" || current_status === "generating") {
+			return;
 		}
 
 		let payload = {
@@ -300,10 +314,118 @@
 		}
 
 		function make_prediction() {
-			app.predict("/predict", payload);
+			const submission = app
+				.submit(payload.fn_index, payload.data as unknown[], payload.event_data)
+				.on("data", ({ data, fn_index }) => {
+					handle_update(data, fn_index);
+				})
+				.on("status", ({ fn_index, ...status }) => {
+					loading_status.update({
+						...status,
+						status: status.stage,
+						progress: status.progress_data,
+						fn_index
+					});
+					if (
+						!showed_duplicate_message &&
+						space_id !== null &&
+						status.position !== undefined &&
+						status.position >= 2 &&
+						status.eta !== undefined &&
+						status.eta > SHOW_DUPLICATE_MESSAGE_ON_ETA
+					) {
+						showed_duplicate_message = true;
+						messages = [
+							new_message(DUPLICATE_MESSAGE, fn_index, "warning"),
+							...messages
+						];
+					}
+					if (
+						!showed_mobile_warning &&
+						is_mobile_device &&
+						status.eta !== undefined &&
+						status.eta > SHOW_MOBILE_QUEUE_WARNING_ON_ETA
+					) {
+						showed_mobile_warning = true;
+						messages = [
+							new_message(MOBILE_QUEUE_WARNING, fn_index, "warning"),
+							...messages
+						];
+					}
+
+					if (status.stage === "complete") {
+						dependencies.map(async (dep, i) => {
+							if (dep.trigger_after === fn_index) {
+								trigger_api_call(i);
+							}
+						});
+
+						submission.destroy();
+					}
+					if (status.broken && is_mobile_device && user_left_page) {
+						window.setTimeout(() => {
+							messages = [
+								new_message(MOBILE_RECONNECT_MESSAGE, fn_index, "error"),
+								...messages
+							];
+						}, 0);
+						trigger_api_call(dep_index, event_data);
+						user_left_page = false;
+					} else if (status.stage === "error") {
+						if (status.message) {
+							const _message = status.message.replace(
+								MESSAGE_QUOTE_RE,
+								(_, b) => b
+							);
+							messages = [
+								new_message(_message, fn_index, "error"),
+								...messages
+							];
+						}
+						dependencies.map(async (dep, i) => {
+							if (
+								dep.trigger_after === fn_index &&
+								!dep.trigger_only_on_success
+							) {
+								trigger_api_call(i);
+							}
+						});
+
+						submission.destroy();
+					}
+				})
+				.on("log", ({ log, fn_index, level }) => {
+					messages = [new_message(log, fn_index, level), ...messages];
+				});
+
+			submit_map.set(dep_index, submission);
 		}
 	};
 
+	const trigger_share = (title: string | undefined, description: string) => {
+		if (space_id === null) {
+			return;
+		}
+		const discussion_url = new URL(
+			`https://huggingface.co/spaces/${space_id}/discussions/new`
+		);
+		if (title !== undefined && title.length > 0) {
+			discussion_url.searchParams.set("title", title);
+		}
+		discussion_url.searchParams.set("description", description);
+		window.open(discussion_url.toString(), "_blank");
+	};
+
+	function handle_error_close(e: Event & { detail: number }) {
+		const _id = e.detail;
+		messages = messages.filter((m) => m.id !== _id);
+	}
+
+	const is_external_url = (link: string | null) =>
+		link && new URL(link, location.href).origin !== location.origin;
+
+	let attached_error_listeners: number[] = [];
+	let shareable_components: number[] = [];
 	async function handle_mount() {
 		await tick();
 
@@ -311,7 +433,11 @@
 
 		for (var i = 0; i < a.length; i++) {
 			const _target = a[i].getAttribute("target");
-			if (_target !== "_blank") a[i].setAttribute("target", "_blank");
+			const _link = a[i].getAttribute("href");
+
+			// only target anchor tags with external links
+			if (is_external_url(_link) && _target !== "_blank")
+				a[i].setAttribute("target", "_blank");
 		}
 
 		dependencies.forEach((dep, i) => {
@@ -330,21 +456,49 @@
 				outputs.every((v) => instance_map?.[v].instance) &&
 				inputs.every((v) => instance_map?.[v].instance)
 			) {
-				trigger_api_call(i, null);
+				trigger_api_call(i);
 				handled_dependencies[i] = [-1];
 			}
 
+			// component events
 			target_instances
 				.filter((v) => !!v && !!v[1])
 				.forEach(([id, { instance }]: [number, ComponentMeta]) => {
 					if (handled_dependencies[i]?.includes(id) || !instance) return;
-					instance?.$on(trigger, (event_data) => {
+					instance?.$on(trigger, (event_data: any) => {
 						trigger_api_call(i, event_data.detail);
 					});
 
 					if (!handled_dependencies[i]) handled_dependencies[i] = [];
 					handled_dependencies[i].push(id);
 				});
+		});
+		// share events
+		components.forEach((c) => {
+			if (
+				c.props.show_share_button &&
+				!shareable_components.includes(c.id) // only one share listener per component
+			) {
+				shareable_components.push(c.id);
+				c.instance.$on("share", (event_data) => {
+					const { title, description } = event_data.detail as ShareData;
+					trigger_share(title, description);
+				});
+			}
+		});
+
+		components.forEach((c) => {
+			if (!attached_error_listeners.includes(c.id)) {
+				if (c.instance) {
+					attached_error_listeners.push(c.id);
+					c.instance.$on("error", (event_data: any) => {
+						messages = [
+							new_message(event_data.detail, -1, "error"),
+							...messages
+						];
+					});
+				}
+			}
 		});
 	}
 
@@ -365,7 +519,7 @@
 			let loading_status = statuses[id];
 			let dependency = dependencies[loading_status.fn_index];
 			loading_status.scroll_to_output = dependency.scroll_to_output;
-			loading_status.visible = dependency.show_progress;
+			loading_status.show_progress = dependency.show_progress;
 
 			set_prop(instance_map[id], "loading_status", loading_status);
 		}
@@ -386,6 +540,14 @@
 			defer
 			src="https://www.googletagmanager.com/gtag/js?id=UA-156449732-1"
 		></script>
+		<script>
+			window.dataLayer = window.dataLayer || [];
+			function gtag() {
+				dataLayer.push(arguments);
+			}
+			gtag("js", new Date());
+			gtag("config", "UA-156449732-1");
+		</script>
 	{/if}
 </svelte:head>
 
@@ -402,7 +564,7 @@
 				{instance_map}
 				{root}
 				{target}
-				{theme}
+				{theme_mode}
 				on:mount={handle_mount}
 				on:destroy={({ detail }) => handle_destroy(detail)}
 			/>
@@ -451,9 +613,14 @@
 				{instance_map}
 				{dependencies}
 				{root}
+				{app}
 			/>
 		</div>
 	</div>
+{/if}
+
+{#if messages}
+	<Toast {messages} on:close={handle_error_close} />
 {/if}
 
 <style>

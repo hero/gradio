@@ -15,8 +15,6 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import PIL
@@ -27,10 +25,13 @@ from gradio_client import utils as client_utils
 from scipy.io import wavfile
 
 import gradio as gr
-from gradio import processing_utils
+from gradio import processing_utils, utils
+from gradio.deprecation import (
+    GradioDeprecationWarning,
+    GradioUnusedKwargWarning,
+)
 
 os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
-matplotlib.use("Agg")
 
 
 class TestComponent:
@@ -90,10 +91,13 @@ class TestTextbox:
             "placeholder": None,
             "value": "",
             "name": "textbox",
+            "show_copy_button": False,
             "show_label": True,
             "type": "text",
             "label": None,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -210,7 +214,11 @@ class TestNumber:
             "name": "number",
             "show_label": True,
             "label": None,
-            "style": {},
+            "minimum": None,
+            "maximum": None,
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": "num",
             "elem_classes": ["first"],
             "visible": True,
@@ -255,7 +263,11 @@ class TestNumber:
             "name": "number",
             "show_label": True,
             "label": None,
-            "style": {},
+            "minimum": None,
+            "maximum": None,
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -371,7 +383,9 @@ class TestSlider:
             "name": "slider",
             "show_label": True,
             "label": "Slide Your Input",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -442,7 +456,9 @@ class TestCheckbox:
             "name": "checkbox",
             "show_label": True,
             "label": "Check Your Input",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -486,7 +502,9 @@ class TestCheckboxGroup:
             "name": "checkboxgroup",
             "show_label": True,
             "label": "Check Your Inputs",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -530,7 +548,9 @@ class TestRadio:
             "name": "radio",
             "show_label": True,
             "label": "Pick Your One Input",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -584,7 +604,9 @@ class TestDropdown:
             "name": "dropdown",
             "show_label": True,
             "label": "Select Your Inputs",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -640,10 +662,15 @@ class TestImage:
             "source": "upload",
             "tool": "editor",
             "name": "image",
+            "show_share_button": False,
             "streaming": False,
             "show_label": True,
             "label": "Upload Your Image",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
+            "height": None,
+            "width": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -682,7 +709,7 @@ class TestImage:
 
     @pytest.mark.flaky
     def test_serialize_url(self):
-        img = "https://gradio.app/assets/img/header-image.jpg"
+        img = "https://gradio-builds.s3.amazonaws.com/demo-files/cheetah-002.jpg"
         expected = client_utils.encode_url_or_file_to_base64(img)
         assert gr.Image().serialize(img) == expected
 
@@ -710,8 +737,8 @@ class TestImage:
         Interface, process
         """
 
-        def generate_noise(width, height):
-            return np.random.randint(0, 256, (width, height, 3))
+        def generate_noise(height, width):
+            return np.random.randint(0, 256, (height, width, 3))
 
         iface = gr.Interface(generate_noise, ["slider", "slider"], "image")
         assert iface(10, 20).endswith(".png")
@@ -734,12 +761,15 @@ class TestPlot:
         """
 
         def plot(num):
+            import matplotlib.pyplot as plt
+
             fig = plt.figure()
             plt.plot(range(num), range(num))
             return fig
 
         iface = gr.Interface(plot, "slider", "plot")
-        output = await iface.process_api(fn_index=0, inputs=[10], state={})
+        with utils.MatplotlibBackendMananger():
+            output = await iface.process_api(fn_index=0, inputs=[10], state={})
         assert output["data"][0]["type"] == "matplotlib"
         assert output["data"][0]["plot"].startswith("data:image/png;base64")
 
@@ -747,8 +777,11 @@ class TestPlot:
         """
         postprocess
         """
-        fig = plt.figure()
-        plt.plot([1, 2, 3], [1, 2, 3])
+        with utils.MatplotlibBackendMananger():
+            import matplotlib.pyplot as plt
+
+            fig = plt.figure()
+            plt.plot([1, 2, 3], [1, 2, 3])
 
         component = gr.Plot(fig)
         assert component.get_config().get("value") is not None
@@ -798,12 +831,16 @@ class TestAudio:
 
         audio_input = gr.Audio(label="Upload Your Audio")
         assert audio_input.get_config() == {
+            "autoplay": False,
             "source": "upload",
             "name": "audio",
+            "show_share_button": False,
             "streaming": False,
             "show_label": True,
             "label": "Upload Your Audio",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -823,6 +860,9 @@ class TestAudio:
         with pytest.raises(ValueError):
             gr.Audio(type="unknown")
 
+        # Confirm Audio can be instantiated with a numpy array
+        gr.Audio((100, np.random.random(size=(1000, 2))), label="Play your audio")
+
         # Output functionalities
         y_audio = client_utils.decode_base64_to_file(
             deepcopy(media_data.BASE64_AUDIO)["data"]
@@ -830,12 +870,16 @@ class TestAudio:
         audio_output = gr.Audio(type="filepath")
         assert filecmp.cmp(y_audio.name, audio_output.postprocess(y_audio.name)["name"])
         assert audio_output.get_config() == {
+            "autoplay": False,
             "name": "audio",
+            "show_share_button": False,
             "streaming": False,
             "show_label": True,
             "label": None,
             "source": "upload",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -852,7 +896,7 @@ class TestAudio:
         ).endswith(".wav")
 
         output1 = audio_output.postprocess(y_audio.name)
-        output2 = audio_output.postprocess(y_audio.name)
+        output2 = audio_output.postprocess(Path(y_audio.name))
         assert output1 == output2
 
     def test_serialize(self):
@@ -908,6 +952,16 @@ class TestAudio:
         output = audio_input.preprocess(x_wav)
         wavfile.read(output)
 
+    def test_prepost_process_to_mp3(self):
+        x_wav = deepcopy(media_data.BASE64_MICROPHONE)
+        audio_input = gr.Audio(type="filepath", format="mp3")
+        output = audio_input.preprocess(x_wav)
+        assert output.endswith("mp3")
+        output = audio_input.postprocess(
+            (48000, np.random.randint(-256, 256, (5, 3)).astype(np.int16))
+        )
+        assert output["name"].endswith("mp3")
+
 
 class TestFile:
     def test_component_functions(self):
@@ -939,7 +993,9 @@ class TestFile:
             "name": "file",
             "show_label": True,
             "label": "Upload Your File",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -952,7 +1008,7 @@ class TestFile:
         x_file["is_example"] = True
         assert file_input.preprocess(x_file) is not None
 
-        zero_size_file = {"name": "document.txt", "size": 0, "data": "data:"}
+        zero_size_file = {"name": "document.txt", "size": 0, "data": ""}
         temp_file = file_input.preprocess(zero_size_file)
         assert os.stat(temp_file.name).st_size == 0
 
@@ -1053,7 +1109,9 @@ class TestDataframe:
             "max_rows": 20,
             "max_cols": None,
             "overflow_row_behaviour": "paginate",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -1076,7 +1134,9 @@ class TestDataframe:
             "name": "dataframe",
             "show_label": True,
             "label": None,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -1262,11 +1322,17 @@ class TestVideo:
 
         video_input = gr.Video(label="Upload Your Video")
         assert video_input.get_config() == {
+            "autoplay": False,
             "source": "upload",
             "name": "video",
+            "show_share_button": False,
             "show_label": True,
             "label": "Upload Your Video",
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
+            "height": None,
+            "width": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -1313,6 +1379,43 @@ class TestVideo:
             )
         ).endswith(".mp4")
 
+        p_video = gr.Video()
+        video_with_subtitle = gr.Video()
+        postprocessed_video = p_video.postprocess(Path(y_vid_path))
+        postprocessed_video_with_subtitle = video_with_subtitle.postprocess(
+            (Path(y_vid_path), Path(subtitles_path))
+        )
+
+        processed_video = (
+            {
+                "name": "video_sample.mp4",
+                "data": None,
+                "is_file": True,
+                "orig_name": "video_sample.mp4",
+            },
+            None,
+        )
+
+        processed_video_with_subtitle = (
+            {
+                "name": "video_sample.mp4",
+                "data": None,
+                "is_file": True,
+                "orig_name": "video_sample.mp4",
+            },
+            {"name": None, "data": True, "is_file": False},
+        )
+        postprocessed_video[0]["name"] = os.path.basename(
+            postprocessed_video[0]["name"]
+        )
+        assert processed_video == postprocessed_video
+        postprocessed_video_with_subtitle[0]["name"] = os.path.basename(
+            postprocessed_video_with_subtitle[0]["name"]
+        )
+        if postprocessed_video_with_subtitle[1]["data"]:
+            postprocessed_video_with_subtitle[1]["data"] = True
+        assert processed_video_with_subtitle == postprocessed_video_with_subtitle
+
     def test_in_interface(self):
         """
         Interface, process
@@ -1338,10 +1441,8 @@ class TestVideo:
             bad_vid = str(test_file_dir / "bad_video_sample.mp4")
             assert not processing_utils.video_is_playable(bad_vid)
             shutil.copy(bad_vid, tmp_not_playable_vid.name)
-            _ = gr.Video().postprocess(tmp_not_playable_vid.name)
-            # The original video gets converted to .mp4 format
-            full_path_to_output = Path(tmp_not_playable_vid.name).with_suffix(".mp4")
-            assert processing_utils.video_is_playable(str(full_path_to_output))
+            output = gr.Video().postprocess(tmp_not_playable_vid.name)
+            assert processing_utils.video_is_playable(output[0]["name"])
 
         # This file has a playable codec but not a playable container
         with tempfile.NamedTemporaryFile(
@@ -1350,12 +1451,11 @@ class TestVideo:
             bad_vid = str(test_file_dir / "playable_but_bad_container.mkv")
             assert not processing_utils.video_is_playable(bad_vid)
             shutil.copy(bad_vid, tmp_not_playable_vid.name)
-            _ = gr.Video().postprocess(tmp_not_playable_vid.name)
-            full_path_to_output = Path(tmp_not_playable_vid.name).with_suffix(".mp4")
-            assert processing_utils.video_is_playable(str(full_path_to_output))
+            output = gr.Video().postprocess(tmp_not_playable_vid.name)
+            assert processing_utils.video_is_playable(output[0]["name"])
 
     @patch("pathlib.Path.exists", MagicMock(return_value=False))
-    @patch("gradio.components.FFmpeg")
+    @patch("gradio.components.video.FFmpeg")
     def test_video_preprocessing_flips_video_for_webcam(self, mock_ffmpeg):
         # Ensures that the cached temp video file is not used so that ffmpeg is called for each test
         x_video = deepcopy(media_data.BASE64_VIDEO)
@@ -1395,9 +1495,22 @@ class TestVideo:
         ).preprocess(x_video)
         output_params = mock_ffmpeg.call_args_list[0][1]["outputs"]
         assert list(output_params.values())[0] == ["-an"]
-        assert "flip" not in list(output_params.keys())[0]
+        assert "flip" not in Path(list(output_params.keys())[0]).name
         assert ".avi" in list(output_params.keys())[0]
         assert ".avi" in output_file
+
+    @pytest.mark.flaky
+    def test_preprocess_url(self):
+        output = gr.Video().preprocess(
+            {
+                "name": "https://gradio-builds.s3.amazonaws.com/demo-files/a.mp4",
+                "is_file": True,
+                "data": None,
+                "size": None,
+                "orig_name": "https://gradio-builds.s3.amazonaws.com/demo-files/a.mp4",
+            }
+        )
+        assert Path(output).name == "a.mp4" and not client_utils.probe_url(output)
 
 
 class TestTimeseries:
@@ -1423,7 +1536,9 @@ class TestTimeseries:
             "show_label": True,
             "label": "Upload Your Timeseries",
             "colors": None,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -1446,7 +1561,9 @@ class TestTimeseries:
             "show_label": True,
             "label": "Disease",
             "colors": None,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -1471,10 +1588,9 @@ class TestTimeseries:
 
 class TestNames:
     # This test ensures that `components.get_component_instance()` works correctly when instantiating from components
-    def test_no_duplicate_uncased_names(self):
-        subclasses = gr.components.Component.__subclasses__()
-        unique_subclasses_uncased = set([s.__name__.lower() for s in subclasses])
-        assert len(subclasses) == len(unique_subclasses_uncased)
+    def test_no_duplicate_uncased_names(self, io_components):
+        unique_subclasses_uncased = {s.__name__.lower() for s in io_components}
+        assert len(io_components) == len(unique_subclasses_uncased)
 
 
 class TestLabel:
@@ -1486,7 +1602,8 @@ class TestLabel:
         label_output = gr.Label()
         label = label_output.postprocess(y)
         assert label == {"label": "happy"}
-        assert json.load(open(label_output.deserialize(label))) == label
+        with open(label_output.deserialize(label)) as f:
+            assert json.load(f) == label
 
         y = {3: 0.7, 1: 0.2, 0: 0.1}
         label = label_output.postprocess(y)
@@ -1520,9 +1637,11 @@ class TestLabel:
             "name": "label",
             "show_label": True,
             "num_top_classes": 2,
-            "value": None,
+            "value": {},
             "label": None,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -1533,7 +1652,6 @@ class TestLabel:
         }
 
     def test_color_argument(self):
-
         label = gr.Label(value=-10, color="red")
         assert label.get_config()["color"] == "red"
         update_1 = gr.Label.update(value="bad", color="brown")
@@ -1662,7 +1780,9 @@ class TestHighlightedText:
             "show_label": True,
             "label": None,
             "show_legend": False,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -1704,6 +1824,72 @@ class TestHighlightedText:
             ]
 
 
+class TestAnnotatedImage:
+    def test_postprocess(self):
+        """
+        postprocess
+        """
+        component = gr.AnnotatedImage()
+        img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        mask1 = [40, 40, 50, 50]
+        mask2 = np.zeros((100, 100), dtype=np.uint8)
+        mask2[10:20, 10:20] = 1
+
+        input = (img, [(mask1, "mask1"), (mask2, "mask2")])
+        result = component.postprocess(input)
+
+        base_img_out, (mask1_out, mask2_out) = result
+        base_img_out = PIL.Image.open(base_img_out["name"])
+
+        assert mask1_out[1] == "mask1"
+
+        mask1_img_out = PIL.Image.open(mask1_out[0]["name"])
+        assert mask1_img_out.size == base_img_out.size
+        mask1_array_out = np.array(mask1_img_out)
+        assert np.max(mask1_array_out[40:50, 40:50]) == 255
+        assert np.max(mask1_array_out[50:60, 50:60]) == 0
+
+    def test_component_functions(self):
+        ht_output = gr.AnnotatedImage(label="sections", show_legend=False)
+        assert ht_output.get_config() == {
+            "name": "annotatedimage",
+            "show_label": True,
+            "label": "sections",
+            "show_legend": False,
+            "container": True,
+            "min_width": 160,
+            "scale": None,
+            "color_map": None,
+            "height": None,
+            "width": None,
+            "elem_id": None,
+            "elem_classes": None,
+            "visible": True,
+            "value": None,
+            "root_url": None,
+            "selectable": False,
+            "interactive": None,
+        }
+
+    def test_in_interface(self):
+        def mask(img):
+            top_left_corner = [0, 0, 20, 20]
+            random_mask = np.random.randint(0, 2, img.shape[:2])
+            return (img, [(top_left_corner, "left corner"), (random_mask, "random")])
+
+        iface = gr.Interface(mask, "image", gr.AnnotatedImage())
+        output_json = iface("test/test_files/bus.png")
+        with open(output_json) as fp:
+            output = json.load(fp)
+            output_img, (mask1, mask1) = output
+        input_img = PIL.Image.open("test/test_files/bus.png")
+        output_img = PIL.Image.open(output_img["name"])
+        mask1_img = PIL.Image.open(mask1[0]["name"])
+
+        assert output_img.size == input_img.size
+        assert mask1_img.size == input_img.size
+
+
 class TestChatbot:
     def test_component_functions(self):
         """
@@ -1711,13 +1897,16 @@ class TestChatbot:
         """
         chatbot = gr.Chatbot()
         assert chatbot.postprocess([["You are **cool**\nand fun", "so are *you*"]]) == [
-            ["You are <strong>cool</strong><br>and fun", "so are <em>you</em>"]
+            ["You are **cool**\nand fun", "so are *you*"]
         ]
 
         multimodal_msg = [
             [("test/test_files/video_sample.mp4",), "cool video"],
             [("test/test_files/audio_sample.wav",), "cool audio"],
             [("test/test_files/bus.png", "A bus"), "cool pic"],
+            [(Path("test/test_files/video_sample.mp4"),), "cool video"],
+            [(Path("test/test_files/audio_sample.wav"),), "cool audio"],
+            [(Path("test/test_files/bus.png"), "A bus"), "cool pic"],
         ]
         processed_multimodal_msg = [
             [
@@ -1750,7 +1939,7 @@ class TestChatbot:
                 },
                 "cool pic",
             ],
-        ]
+        ] * 2
         postprocessed_multimodal_msg = chatbot.postprocess(multimodal_msg)
         postprocessed_multimodal_msg_base_names = []
         for x, y in postprocessed_multimodal_msg:
@@ -1776,12 +1965,17 @@ class TestChatbot:
             "show_label": True,
             "interactive": None,
             "name": "chatbot",
+            "show_share_button": False,
             "visible": True,
             "elem_id": None,
             "elem_classes": None,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
+            "height": None,
             "root_url": None,
             "selectable": False,
+            "latex_delimiters": [{"display": True, "left": "$$", "right": "$$"}],
         }
 
 
@@ -1793,7 +1987,9 @@ class TestJSON:
         js_output = gr.JSON()
         assert js_output.postprocess('{"a":1, "b": 2}'), '"{\\"a\\":1, \\"b\\": 2}"'
         assert js_output.get_config() == {
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -1848,7 +2044,9 @@ class TestHTML:
         """
         html_component = gr.components.HTML("#Welcome onboard", label="HTML Input")
         assert {
-            "style": {},
+            "container": True,
+            "min_width": None,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -1866,7 +2064,7 @@ class TestHTML:
         """
 
         def bold_text(text):
-            return "<strong>" + text + "</strong>"
+            return f"<strong>{text}</strong>"
 
         iface = gr.Interface(bold_text, "text", "html")
         assert iface("test") == "<strong>test</strong>"
@@ -1909,12 +2107,14 @@ class TestModel3D:
             "visible": True,
             "elem_id": None,
             "elem_classes": None,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
         } == component.get_config()
 
         file = "test/test_files/Box.gltf"
         output1 = component.postprocess(file)
-        output2 = component.postprocess(file)
+        output2 = component.postprocess(Path(file))
         assert output1 == output2
 
     def test_in_interface(self):
@@ -1945,7 +2145,9 @@ class TestColorPicker:
             "value": None,
             "show_label": True,
             "label": None,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -2010,6 +2212,13 @@ class TestGallery:
             data_restored = gallery.serialize(path)
             data_restored = [d[0]["data"] for d in data_restored]
             assert sorted(data) == sorted(data_restored)
+
+        postprocessed_gallery = gallery.postprocess([Path("test/test_files/bus.png")])
+        processed_gallery = [{"name": "bus.png", "data": None, "is_file": True}]
+        postprocessed_gallery[0]["name"] = os.path.basename(
+            postprocessed_gallery[0]["name"]
+        )
+        assert processed_gallery == postprocessed_gallery
 
 
 class TestState:
@@ -2091,7 +2300,7 @@ def test_dataset_calls_as_example(*mocks):
             ]
         ],
     )
-    assert all([m.called for m in mocks])
+    assert all(m.called for m in mocks)
 
 
 cars = vega_datasets.data.cars()
@@ -2108,7 +2317,6 @@ simple = pd.DataFrame(
 class TestScatterPlot:
     @patch.dict("sys.modules", {"bokeh": MagicMock(__version__="3.0.3")})
     def test_get_config(self):
-
         assert gr.ScatterPlot().get_config() == {
             "caption": None,
             "elem_id": None,
@@ -2118,7 +2326,9 @@ class TestScatterPlot:
             "name": "plot",
             "root_url": None,
             "show_label": True,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "value": None,
             "visible": True,
             "bokeh_version": "3.0.3",
@@ -2133,7 +2343,7 @@ class TestScatterPlot:
             x_title="Horse",
         )
         output = plot.postprocess(cars)
-        assert sorted(list(output.keys())) == ["chart", "plot", "type"]
+        assert sorted(output.keys()) == ["chart", "plot", "type"]
         config = json.loads(output["plot"])
         assert config["encoding"]["x"]["field"] == "Horsepower"
         assert config["encoding"]["x"]["title"] == "Horse"
@@ -2154,7 +2364,7 @@ class TestScatterPlot:
             x="Horsepower", y="Miles_per_Gallon", tooltip="Name", interactive=False
         )
         output = plot.postprocess(cars)
-        assert sorted(list(output.keys())) == ["chart", "plot", "type"]
+        assert sorted(output.keys()) == ["chart", "plot", "type"]
         config = json.loads(output["plot"])
         assert "selection" not in config
 
@@ -2163,7 +2373,7 @@ class TestScatterPlot:
             x="Horsepower", y="Miles_per_Gallon", height=100, width=200
         )
         output = plot.postprocess(cars)
-        assert sorted(list(output.keys())) == ["chart", "plot", "type"]
+        assert sorted(output.keys()) == ["chart", "plot", "type"]
         config = json.loads(output["plot"])
         assert config["height"] == 100
         assert config["width"] == 200
@@ -2303,7 +2513,9 @@ class TestLinePlot:
             "name": "plot",
             "root_url": None,
             "show_label": True,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "value": None,
             "visible": True,
             "bokeh_version": "3.0.3",
@@ -2318,7 +2530,7 @@ class TestLinePlot:
             x_title="Trading Day",
         )
         output = plot.postprocess(stocks)
-        assert sorted(list(output.keys())) == ["chart", "plot", "type"]
+        assert sorted(output.keys()) == ["chart", "plot", "type"]
         config = json.loads(output["plot"])
         for layer in config["layer"]:
             assert layer["mark"]["type"] in ["line", "point"]
@@ -2333,7 +2545,7 @@ class TestLinePlot:
     def test_height_width(self):
         plot = gr.LinePlot(x="date", y="price", height=100, width=200)
         output = plot.postprocess(stocks)
-        assert sorted(list(output.keys())) == ["chart", "plot", "type"]
+        assert sorted(output.keys()) == ["chart", "plot", "type"]
         config = json.loads(output["plot"])
         assert config["height"] == 100
         assert config["width"] == 200
@@ -2467,11 +2679,19 @@ class TestBarPlot:
             "name": "plot",
             "root_url": None,
             "show_label": True,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "value": None,
             "visible": True,
             "bokeh_version": "3.0.3",
         }
+
+    def test_update_defaults_none(self):
+        output = gr.BarPlot.update(simple, x="a", y="b", height=100, width=200)
+        assert all(
+            v is None for k, v in output.items() if k not in ["value", "__type__"]
+        )
 
     def test_no_color(self):
         plot = gr.BarPlot(
@@ -2482,7 +2702,7 @@ class TestBarPlot:
             x_title="Variable A",
         )
         output = plot.postprocess(simple)
-        assert sorted(list(output.keys())) == ["chart", "plot", "type"]
+        assert sorted(output.keys()) == ["chart", "plot", "type"]
         assert output["chart"] == "bar"
         config = json.loads(output["plot"])
         assert config["encoding"]["x"]["field"] == "a"
@@ -2497,7 +2717,7 @@ class TestBarPlot:
     def test_height_width(self):
         plot = gr.BarPlot(x="a", y="b", height=100, width=200)
         output = plot.postprocess(simple)
-        assert sorted(list(output.keys())) == ["chart", "plot", "type"]
+        assert sorted(output.keys()) == ["chart", "plot", "type"]
         config = json.loads(output["plot"])
         assert config["height"] == 100
         assert config["width"] == 200
@@ -2618,7 +2838,8 @@ class TestCode:
                 return a
             """
             )
-            == "def fn(a):\n    return a"
+            == """def fn(a):
+                return a"""
         )
 
         test_file_dir = Path(Path(__file__).parent, "test_files")
@@ -2637,7 +2858,9 @@ class TestCode:
             "name": "code",
             "show_label": True,
             "label": None,
-            "style": {},
+            "container": True,
+            "min_width": 160,
+            "scale": None,
             "elem_id": None,
             "elem_classes": None,
             "visible": True,
@@ -2725,3 +2948,16 @@ class TestTempFileManagement:
 
         f = temp_file_manager.download_temp_copy_if_needed(url2)
         assert len(temp_file_manager.temp_files) == 2
+
+
+def test_type_arg_deperecation_warning():
+    with pytest.warns(GradioUnusedKwargWarning):
+        gr.Video(type="filepath")
+
+
+def test_plot_arg_deprecation_warning():
+    with pytest.warns(GradioDeprecationWarning):
+        gr.Image(plot=True)
+
+    with pytest.warns(GradioUnusedKwargWarning):
+        gr.File(plot=True)

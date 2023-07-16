@@ -13,19 +13,22 @@
 	export let subtitle: FileData | null = null;
 	export let source: string;
 	export let label: string | undefined = undefined;
-	export let show_label: boolean = true;
-	export let mirror_webcam: boolean = false;
+	export let show_label = true;
+	export let mirror_webcam = false;
 	export let include_audio: boolean;
+	export let autoplay: boolean;
 
 	const dispatch = createEventDispatcher<{
-		change: FileData | null;
+		change: any;
 		clear: undefined;
 		play: undefined;
 		pause: undefined;
-		ended: undefined;
+		end: undefined;
 		drag: boolean;
 		error: string;
 		upload: FileData;
+		start_recording: undefined;
+		stop_recording: undefined;
 	}>();
 
 	function handle_load({ detail }: CustomEvent<FileData | null>) {
@@ -57,20 +60,26 @@
 			mode="video"
 			on:error
 			on:capture={({ detail }) => dispatch("change", detail)}
+			on:start_recording
+			on:stop_recording
 		/>
 	{/if}
 {:else}
 	<ModifyUpload on:clear={handle_clear} />
 	{#if playable()}
-		<!-- svelte-ignore a11y-media-has-caption -->
-		<Player
-			src={value.data}
-			subtitle={subtitle?.data}
-			on:play
-			on:pause
-			on:ended
-			mirror={mirror_webcam && source === "webcam"}
-		/>
+		{#key value?.data}
+			<Player
+				{autoplay}
+				src={value.data}
+				subtitle={subtitle?.data}
+				on:play
+				on:pause
+				on:stop
+				on:end
+				mirror={mirror_webcam && source === "webcam"}
+				{label}
+			/>
+		{/key}
 	{:else if value.size}
 		<div class="file-name">{value.name}</div>
 		<div class="file-size">

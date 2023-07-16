@@ -1,26 +1,27 @@
 <script lang="ts">
-	import { tick } from "svelte";
+	import { createEventDispatcher } from "svelte";
 	import { Play, Pause, Maximise, Undo } from "@gradio/icons";
+	import { loaded } from "./utils";
 
 	export let src: string;
 	export let subtitle: string | null = null;
 	export let mirror: boolean;
+	export let autoplay: boolean;
+	export let label = "test";
 
-	let time: number = 0;
+	const dispatch = createEventDispatcher<{
+		play: undefined;
+		pause: undefined;
+		stop: undefined;
+		end: undefined;
+	}>();
+
+	let time = 0;
 	let duration: number;
-	let paused: boolean = true;
+	let paused = true;
 	let video: HTMLVideoElement;
 
-	let show_controls = true;
-	let show_controls_timeout: NodeJS.Timeout;
-
-	function video_move() {
-		clearTimeout(show_controls_timeout);
-		show_controls_timeout = setTimeout(() => (show_controls = false), 500);
-		show_controls = true;
-	}
-
-	function handleMove(e: TouchEvent | MouseEvent) {
+	function handleMove(e: TouchEvent | MouseEvent): void {
 		if (!duration) return;
 
 		if (e.type === "click") {
@@ -40,26 +41,28 @@
 		time = (duration * (clientX - left)) / (right - left);
 	}
 
-	async function play_pause() {
-		const isPlaying =
-			video.currentTime > 0 &&
-			!video.paused &&
-			!video.ended &&
-			video.readyState > video.HAVE_CURRENT_DATA;
+	async function play_pause(): Promise<void> {
+		if (document.fullscreenElement != video) {
+			const isPlaying =
+				video.currentTime > 0 &&
+				!video.paused &&
+				!video.ended &&
+				video.readyState > video.HAVE_CURRENT_DATA;
 
-		if (!isPlaying) {
-			await video.play();
-		} else video.pause();
+			if (!isPlaying) {
+				await video.play();
+			} else video.pause();
+		}
 	}
 
-	function handle_click(e: MouseEvent) {
+	function handle_click(e: MouseEvent): void {
 		const { left, right } = (
 			e.currentTarget as HTMLProgressElement
 		).getBoundingClientRect();
 		time = (duration * (e.clientX - left)) / (right - left);
 	}
 
-	function format(seconds: number) {
+	function format(seconds: number): string {
 		if (isNaN(seconds) || !isFinite(seconds)) return "...";
 
 		const minutes = Math.floor(seconds / 60);
@@ -69,77 +72,32 @@
 		return `${minutes}:${_seconds}`;
 	}
 
-	async function checkforVideo() {
-		transition = "0s";
-		await tick();
-		wrap_opacity = 0.8;
-		opacity = 0;
-		await tick();
-
-		var b = setInterval(async () => {
-			if (video.readyState >= 1) {
-				height = (video.videoHeight / video.videoWidth) * width;
-			}
-			if (video.readyState >= 3) {
-				video.currentTime = 9999;
-				paused = true;
-				transition = "0.2s";
-
-				setTimeout(async () => {
-					video.currentTime = 0.0;
-					opacity = 1;
-					wrap_opacity = 1;
-				}, 50);
-				clearInterval(b);
-			}
-		}, 15);
+	function handle_end(): void {
+		dispatch("stop");
+		dispatch("end");
 	}
-
-	async function _load() {
-		checkforVideo();
-	}
-
-	$: src && _load();
-
-	let height: number;
-	let width: number;
-	let opacity: number = 0;
-	let wrap_opacity: number = 0;
-	let transition: string = "0.5s";
 </script>
 
-<div
-	style:opacity={wrap_opacity}
-	class="wrap"
-	style:height={`${src && height}px` || `auto`}
->
+<div class="wrap">
 	<video
-		bind:clientHeight={height}
-		bind:clientWidth={width}
 		{src}
 		preload="auto"
-		on:mousemove={video_move}
 		on:click={play_pause}
 		on:play
 		on:pause
-		on:ended
+		on:ended={handle_end}
 		bind:currentTime={time}
 		bind:duration
 		bind:paused
 		bind:this={video}
 		class:mirror
-		style:opacity
-		style:transition
+		use:loaded={{ autoplay }}
+		data-testid={`${label}-player`}
 	>
 		<track kind="captions" src={subtitle} default />
 	</video>
 
-	<div
-		class="controls"
-		style:opacity={opacity === 1 && duration && show_controls ? 1 : 0}
-		on:mousemove={video_move}
-		style:transition
-	>
+	<div class="controls">
 		<div class="inner">
 			<span class="icon" on:click={play_pause}>
 				{#if time === duration}
@@ -189,6 +147,7 @@
 	}
 
 	video {
+		position: inherit;
 		background-color: black;
 		width: var(--size-full);
 		height: var(--size-full);
@@ -202,6 +161,7 @@
 	.controls {
 		position: absolute;
 		bottom: 0;
+		opacity: 0;
 		transition: 500ms;
 		margin: var(--size-2);
 		border-radius: var(--radius-md);
@@ -209,6 +169,9 @@
 		padding: var(--size-2) var(--size-1);
 		width: calc(100% - 0.375rem * 2);
 		width: calc(100% - var(--size-2) * 2);
+	}
+	.wrap:hover .controls {
+		opacity: 1;
 	}
 
 	.inner {
@@ -238,6 +201,7 @@
 		font-family: var(--font-mono);
 	}
 	.wrap {
+		position: relative;
 		background-color: var(--background-fill-secondary);
 	}
 </style>

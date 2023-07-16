@@ -1,40 +1,46 @@
 <script lang="ts">
-	import { createEventDispatcher, tick } from "svelte";
+	import { afterUpdate, createEventDispatcher, tick } from "svelte";
 	import { BlockTitle } from "@gradio/atoms";
 	import { Copy, Check } from "@gradio/icons";
 	import { fade } from "svelte/transition";
-	import { get_styles } from "@gradio/utils";
-	import type { Styles } from "@gradio/utils";
 	import type { SelectData } from "@gradio/utils";
 
 	export let value: string = "";
+	export let value_is_output: boolean = false;
 	export let lines: number = 1;
 	export let placeholder: string = "Type here...";
 	export let label: string;
 	export let info: string | undefined = undefined;
 	export let disabled = false;
 	export let show_label: boolean = true;
-	export let max_lines: number | false;
+	export let max_lines: number;
 	export let type: "text" | "password" | "email" = "text";
-	export let style: Styles = {};
+	export let show_copy_button: boolean = false;
 
 	let el: HTMLTextAreaElement | HTMLInputElement;
 	let copied = false;
 	let timer: NodeJS.Timeout;
 
 	$: value, el && lines !== max_lines && resize({ target: el });
-	$: handle_change(value);
 
 	const dispatch = createEventDispatcher<{
 		change: string;
 		submit: undefined;
 		blur: undefined;
 		select: SelectData;
+		input: undefined;
 	}>();
 
-	function handle_change(val: string) {
-		dispatch("change", val);
+	function handle_change() {
+		dispatch("change", value);
+		if (!value_is_output) {
+			dispatch("input");
+		}
 	}
+	afterUpdate(() => {
+		value_is_output = false;
+	});
+	$: value, handle_change();
 
 	function handle_blur() {
 		dispatch("blur");
@@ -90,7 +96,7 @@
 		if (lines === max_lines) return;
 
 		let max =
-			max_lines === false
+			max_lines === undefined
 				? false
 				: max_lines === undefined // default
 				? 21 * 11
@@ -174,7 +180,7 @@
 			/>
 		{/if}
 	{:else}
-		{#if show_label && style.show_copy_button}
+		{#if show_label && show_copy_button}
 			{#if copied}
 				<button in:fade={{ duration: 300 }}><Check /></button>
 			{:else}
@@ -220,6 +226,12 @@
 		font-weight: var(--input-text-weight);
 		font-size: var(--input-text-size);
 		line-height: var(--line-sm);
+	}
+	input:disabled,
+	textarea:disabled {
+		-webkit-text-fill-color: var(--body-text-color);
+		-webkit-opacity: 1;
+		opacity: 1;
 	}
 
 	input:focus,
